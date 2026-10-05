@@ -27,6 +27,10 @@ run_godot smoke --quit-after 10
 run_godot tests --script res://tests/test_game.gd
 run_godot network-tests --script res://tests/test_network.gd
 run_godot expansion-tests --script res://tests/test_expansion.gd
+run_godot 3d-tests --script res://tests/test_3d.gd
+run_godot six-player-tests --script res://tests/test_multiplayer_six.gd
+run_godot menu-tests --script res://tests/test_menu.gd
+run_godot animation-tests --script res://tests/test_animation.gd
 run_godot export --export-release Web "$ROOT/build/web/index.html"
 touch "$ROOT/build/web/.nojekyll"
 python3 "$ROOT/scripts/validate-web.py" "$ROOT/build/web"

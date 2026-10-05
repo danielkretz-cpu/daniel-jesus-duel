@@ -67,7 +67,7 @@ func run() -> void:
 	host = scene()
 	guest = scene()
 	await process_frame
-	check(host.net.PROTOCOL == 2, "Client advertises expansion protocol version 2")
+	check(host.net.PROTOCOL == 3, "Client advertises expansion protocol version 3")
 	host.net._handle({"type": "welcome", "protocol": 1, "seat": 0})
 	check(host.net.status == "error" and host.net.seat == -1 and host.net.status_text.contains("versionerna") and host.net.status_text.contains("Ladda om"), "Legacy welcome fails with a useful version/reload message before joining")
 	test_freedom()
@@ -259,8 +259,8 @@ func test_snapshots() -> void:
 	host.weapon = host.BANANA
 	host.fire()
 	var wire: Dictionary = host.network_snapshot()
-	check(wire.schema == 2 and wire.map_id == 3 and wire.freedom == [1, 1] and wire.fragments == [], "Schema 2 explicitly carries map, both inventories, and fragment list")
-	check(transfer() and host.network_snapshot() == guest.network_snapshot(), "Primary banana ownership and all schema-2 fields round-trip exactly")
+	check(wire.schema == 3 and wire.map_id == 3 and wire.freedom == [1, 1] and wire.fragments == [], "Schema 3 explicitly carries map, both inventories, and fragment list")
+	check(transfer() and host.network_snapshot() == guest.network_snapshot(), "Primary banana ownership and all schema-3 fields round-trip exactly")
 	reset(4)
 	host.freedom[0] = 1
 	host.weapon = host.FREEDOM
@@ -273,7 +273,7 @@ func test_malformed() -> void:
 	host.freedom[0] = 1
 	host.phase = "flying"
 	host.fragments.append(bullet(host.BANANA_FRAGMENT, 0, Vector2(600, 120), Vector2(93, -170), 0.25))
-	check(transfer(), "Valid nontrivial schema-2 baseline is accepted before corruption tests")
+	check(transfer(), "Valid nontrivial schema-3 baseline is accepted before corruption tests")
 	var clean: Dictionary = guest.network_snapshot()
 	for invalid_map in [-1, 5, 0.5, "2", null]:
 		var malformed: Dictionary = clean.duplicate(true)
@@ -286,7 +286,7 @@ func test_malformed() -> void:
 	for field in ["map_id", "freedom", "fragments"]:
 		var malformed: Dictionary = clean.duplicate(true)
 		malformed.erase(field)
-		rejected_atomically(malformed, "Missing required schema-2 %s is rejected atomically" % field)
+		rejected_atomically(malformed, "Missing required schema-3 %s is rejected atomically" % field)
 	var malformed: Dictionary = clean.duplicate(true)
 	malformed.schema = 1
 	rejected_atomically(malformed, "Old schema cannot silently drop map or weapon state")
@@ -344,6 +344,6 @@ func test_numeric_roundtrips() -> void:
 		host.trail.append(Vector2(27.700096130371094, precision_rng.randf_range(-300, 430)))
 		if not transfer() or host.network_snapshot() != guest.network_snapshot():
 			exact = false
-			push_error("Canonical schema-2 numeric mismatch at sample %d" % sample)
+			push_error("Canonical schema-3 numeric mismatch at sample %d" % sample)
 			break
-	check(exact, "1000 randomized schema-2 snapshots preserve exact binary32 primary, fragment, fighter and inventory state through JSON")
+	check(exact, "1000 randomized schema-3 snapshots preserve exact binary32 primary, fragment, fighter and inventory state through JSON")

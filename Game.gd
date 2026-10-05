@@ -15,6 +15,10 @@ const BOLD = preload("res://assets/Bold.ttf")
 const NetSessionScript = preload("res://NetSession.gd")
 const OnlineLobbyScript = preload("res://OnlineLobby.gd")
 const MapThemes = preload("res://MapThemes.gd")
+const World3DScript = preload("res://World3D.gd")
+const StartMenuScript = preload("res://StartMenu.gd")
+const FriendInvite = preload("res://FriendInvite.gd")
+const FighterScript = preload("res://Fighter3D.gd")
 const ROCKET := 0
 const BOMB := 1
 const BANANA := 2
@@ -31,6 +35,11 @@ var floaters: Array[Dictionary] = []
 var projectile: Dictionary = {}
 var fragments: Array[Dictionary] = []
 var freedom: Array[int] = [0, 0]
+var player_names: Array[String] = ["Daniel", "Jesus"]
+var target := 1
+var _remote_input_sequences: Dictionary = {}
+var start_menu
+var compact_landscape := false
 var map_id := 0
 var trail: Array[Vector2] = []
 var phase := "title"
@@ -85,6 +94,7 @@ var _online_started := false
 var _host_focused := true
 var _host_paused := false
 var _state_age := 0.0
+var world3d
 
 func _ready() -> void:
 	rng.randomize()
@@ -98,31 +108,49 @@ func _ready() -> void:
 	add_child(net)
 	lobby = OnlineLobbyScript.new()
 	add_child(lobby)
-	lobby.create_requested.connect(func(): net.create_room())
-	lobby.join_requested.connect(func(code: String): net.join_room(code))
+	lobby.create_requested.connect(func(chosen_name: String): net.create_room(chosen_name, 6, map_id))
+	lobby.join_requested.connect(func(code: String, chosen_name: String): net.join_room(code, chosen_name))
+	lobby.start_requested.connect(func(selected_map: int): net.start_match(selected_map))
+	lobby.map_changed.connect(_lobby_map_changed)
 	lobby.leave_requested.connect(_leave_online)
+	if lobby.has_signal("leave_cancelled"):
+		lobby.leave_cancelled.connect(_refresh_network_overlay)
 	lobby.reconnect_requested.connect(func(): net.reconnect())
-	lobby.copy_requested.connect(_copy_room)
+	start_menu = StartMenuScript.new()
+	add_child(start_menu)
+	start_menu.local_requested.connect(_menu_local)
+	start_menu.online_requested.connect(_menu_online)
+	start_menu.map_changed.connect(_set_preview_map)
 	net.changed.connect(_network_changed)
 	net.welcomed.connect(_network_welcome)
 	net.received.connect(_network_received)
+	# The renderer never owns gameplay state. Dedicated/headless tests skip GPU work.
+	if DisplayServer.get_name() != "headless" or OS.get_cmdline_user_args().has("--render-3d"):
+		world3d = World3DScript.new()
+		add_child(world3d)
+		world3d.initialize(self)
 	_layout()
-	if OS.has_feature("web"):
-		var room_code = JavaScriptBridge.eval("new URLSearchParams(window.location.search).get('room') || ''")
-		if room_code is String and not room_code.is_empty():
-			_open_online()
-			lobby.code.text = room_code.to_upper()
+	var invited_room: String = FriendInvite.current_room()
+	if not invited_room.is_empty():
+		_open_online()
+		lobby.open_invite(invited_room)
 	queue_redraw()
 
 func _layout(view: Vector2 = Vector2.ZERO) -> void:
 	if view == Vector2.ZERO:
 		view = get_viewport_rect().size
 	portrait = view.y / view.x > 0.8125
+	compact_landscape = not portrait and view.y < 600
 	ui_scale = view.x / 1280.0 if portrait else minf(view.x / 1280.0, view.y / 800.0)
 	ui_origin = Vector2((view.x - 1280.0 * ui_scale) * 0.5, 0)
 	layout_h = view.y / ui_scale
 	world_top = 320.0 if portrait else 128.0
 	panel_y = 870.0 if portrait else 620.0
+	if portrait and fighters.size() > 2:
+		world_top = 390.0
+		panel_y = 940.0
+	if compact_landscape:
+		panel_y = 606.0
 	buttons.clear()
 	buttons.help = Rect2(1156, 26, 44, 44)
 	buttons.sound = Rect2(1098, 26, 44, 44)
@@ -152,6 +180,22 @@ func _layout(view: Vector2 = Vector2.ZERO) -> void:
 		buttons.weapon = Rect2(790, panel_y + 64, 190, 66)
 		buttons.fire = Rect2(1008, panel_y + 48, 244, 84)
 		buttons.start = Rect2(423, world_top + 294, 434, 74)
+	if compact_landscape:
+		buttons.left = Rect2(20, panel_y + 74, 100, 104)
+		buttons.right = Rect2(132, panel_y + 74, 100, 104)
+		buttons.jump = Rect2(244, panel_y + 74, 110, 104)
+		buttons.angle_down = Rect2(390, panel_y + 74, 100, 104)
+		buttons.angle_up = Rect2(598, panel_y + 74, 100, 104)
+		buttons.power_down = Rect2(716, panel_y + 74, 100, 104)
+		buttons.power_up = Rect2(924, panel_y + 74, 100, 104)
+		buttons.weapon = Rect2(1050, panel_y + 2, 210, 90)
+		buttons.fire = Rect2(1050, panel_y + 102, 210, 90)
+	if fighters.size() > 2:
+		buttons.target = Rect2(900, world_top + 75, 352, 96) if compact_landscape else Rect2(972, world_top + 75, 280, 56)
+		if portrait:
+			buttons.target = Rect2(638, panel_y + 256, 568, 132)
+			for action in ["angle_down", "angle_up", "power_down", "power_up", "fire"]:
+				buttons[action].position.y += 90
 	buttons.online = Rect2(316, world_top + 394, 648, 70) if portrait else Rect2(423, world_top + 340, 434, 56)
 	if portrait:
 		buttons.start = Rect2(316, world_top + 294, 648, 80)
@@ -163,7 +207,9 @@ func _layout(view: Vector2 = Vector2.ZERO) -> void:
 		buttons.start = Rect2(274, world_top + 370, 732, 112)
 		buttons.online = Rect2(274, world_top + 506, 732, 112)
 	if lobby != null:
-		lobby.place(ui_origin, ui_scale, world_top, portrait)
+		lobby.layout(view)
+	if start_menu != null:
+		start_menu.layout(view)
 	buttons.close_help = Rect2(400, world_top + 344, 480, 74)
 	last_size = view
 
@@ -175,13 +221,91 @@ func _generate_terrain() -> void:
 		for y in range(surface, WH):
 			terrain.set_pixel(x, y, MapThemes.terrain_color(map_id, x, y, surface))
 	terrain_texture = ImageTexture.create_from_image(terrain)
+	if world3d != null:
+		world3d.terrain_changed(terrain, terrain_texture)
 
 func _spawn_fighters() -> void:
-	var spawns := MapThemes.spawn_points(map_id)
-	fighters = [
-		{"name": "Daniel", "pos": spawns[0], "vel": Vector2.ZERO, "hp": 100, "face": 1.0, "ground": true},
-		{"name": "Jesus", "pos": spawns[1], "vel": Vector2.ZERO, "hp": 100, "face": -1.0, "ground": true}
-	]
+	if online and net != null and net.roster.size() >= 2:
+		player_names.clear()
+		for player in net.roster:
+			player_names.append(str(player.name))
+	if player_names.size() < 2 or player_names.size() > 6:
+		player_names = ["Daniel", "Jesus"]
+	fighters.clear()
+	var count := player_names.size()
+	for i in range(count):
+		var x := (224 if i == 0 else 1050) if count == 2 else int(round(100.0 + i * 1080.0 / (count - 1)))
+		if count > 2:
+			var preferred := x
+			var found := false
+			for offset in range(37):
+				for sign_x in [-1, 1]:
+					var candidate := clampi(preferred + offset * sign_x, 20, WW - 21)
+					var height := MapThemes.surface_y(map_id, candidate)
+					if MapThemes.surface_y(map_id, candidate - 12) >= height - 12 and MapThemes.surface_y(map_id, candidate + 12) >= height - 12:
+						x = candidate
+						found = true
+						break
+				if found:
+					break
+		var spawn := Vector2(x, MapThemes.surface_y(map_id, x))
+		fighters.append({"name": player_names[i], "pos": spawn, "vel": Vector2.ZERO, "hp": 100, "face": 1.0 if x < 640 else -1.0, "ground": true})
+	freedom.resize(count)
+	target = _nearest_target(0)
+
+func _nearest_target(owner: int) -> int:
+	var closest := -1
+	var distance := INF
+	for i in range(fighters.size()):
+		if i == owner or fighters[i].hp <= 0:
+			continue
+		var candidate: float = fighters[i].pos.distance_squared_to(fighters[owner].pos)
+		if candidate < distance:
+			distance = candidate
+			closest = i
+	return closest if closest >= 0 else (owner + 1) % fighters.size()
+
+func _valid_target(value: int, owner: int) -> bool:
+	return value >= 0 and value < fighters.size() and value != owner and fighters[value].hp > 0
+
+func _target_action() -> void:
+	if phase != "aim" or not _can_control():
+		return
+	if online and net.seat > 0 and not _applying_remote:
+		_send_guest_input("target")
+		return
+	for offset in range(1, fighters.size() + 1):
+		var candidate := (target + offset) % fighters.size()
+		if _valid_target(candidate, active):
+			target = candidate
+			break
+
+func _fighter_color(index: int) -> Color:
+	return FighterScript.fighter_color(index)
+
+func _menu_local(selected_map: int) -> void:
+	map_id = selected_map
+	player_names = ["Daniel", "Jesus"]
+	start_game()
+
+func _menu_online(selected_map: int) -> void:
+	map_id = selected_map
+	_open_online()
+
+func _set_preview_map(selected_map: int) -> void:
+	if phase != "title":
+		return
+	map_id = clampi(selected_map, 0, MapThemes.count() - 1)
+	craters.clear()
+	_generate_terrain()
+	_spawn_fighters()
+	if start_menu != null:
+		start_menu.set_map(map_id)
+
+func _lobby_map_changed(selected_map: int) -> void:
+	_set_preview_map(selected_map)
+	if net != null and not net.room.is_empty() and net.seat == 0:
+		net.set_map(selected_map)
 
 func _map_action(direction: int) -> void:
 	if phase != "title" or online:
@@ -196,13 +320,16 @@ func _map_action(direction: int) -> void:
 	trail.clear()
 
 func start_game() -> void:
-	freedom = [0, 0]
+	if online and net != null and net.started:
+		map_id = net.map_id
+	_remote_input_sequences.clear()
 	fragments.clear()
 	craters.clear()
 	_remote_held.clear()
 	_pending_aim.clear()
 	_generate_terrain()
 	_spawn_fighters()
+	freedom.fill(0)
 	projectile.clear()
 	trail.clear()
 	particles.clear()
@@ -219,12 +346,16 @@ func start_game() -> void:
 	wind = rng.randf_range(-23, 23)
 	move_left = 170
 	turn_clock = 40
-	banner = "Daniel börjar!"
+	target = _nearest_target(active)
+	banner = "%s börjar!" % fighters[active].name
 	banner_clock = 2.0
 	help_open = false
 	toast_clock = 0
 	pointers.clear()
 	held.clear()
+	if start_menu != null:
+		start_menu.hide()
+	_layout(last_size)
 	_sound("start")
 
 func _solid(p: Vector2) -> bool:
@@ -257,10 +388,12 @@ func _move_character(direction: float, delta: float) -> void:
 		move_left = maxf(0, move_left - absf(step))
 
 func _jump() -> void:
+	if help_open and not _applying_remote:
+		return
 	if online and not _applying_remote:
 		if not _can_control():
 			return
-		if net.seat == 1:
+		if net.seat > 0:
 			_send_guest_input("jump")
 			return
 	if phase != "aim" or move_left < 20 or not fighters[active].ground:
@@ -292,7 +425,7 @@ func _physics_process(delta: float) -> void:
 				_move_character(direction, delta)
 			angle = clampf(angle + (_held_value("angle_up", KEY_W, KEY_UP) - _held_value("angle_down", KEY_S, KEY_DOWN)) * delta * 44, 5, 85)
 			power = clampf(power + (_held_value("power_up", KEY_E, KEY_EQUAL) - _held_value("power_down", KEY_Q, KEY_MINUS)) * delta * 44, 12, 100)
-	for i in range(2):
+	for i in range(fighters.size()):
 		_step_fighter(i, delta)
 	if phase == "flying":
 		_step_projectile(delta)
@@ -302,11 +435,16 @@ func _physics_process(delta: float) -> void:
 			_finish_turn()
 		elif settle_clock < -4:
 			_finish_turn()
-	if phase == "aim" and (fighters[0].hp <= 0 or fighters[1].hp <= 0):
-		_check_winner()
+	if phase == "aim":
+		if _check_winner():
+			return
+		if fighters[active].hp <= 0:
+			_finish_turn()
+		elif not _valid_target(target, active):
+			target = _nearest_target(active)
 
 func _held_value(action: String, key1: int, key2: int) -> float:
-	if online and active == 1 and net.seat == 0:
+	if online and active > 0 and net.seat == 0:
 		return float(_remote_held.get(action, 0.0))
 	if online and (help_open or not _can_control()):
 		return 0.0
@@ -366,7 +504,7 @@ func fire() -> void:
 	if online and not _applying_remote:
 		if not _can_control():
 			return
-		if net.seat == 1:
+		if net.seat > 0:
 			_send_guest_input("fire")
 			return
 	if phase != "aim" or (help_open and not _applying_remote):
@@ -375,11 +513,13 @@ func fire() -> void:
 		toast = "Freedom är låst. Träffa motståndaren direkt först!"
 		toast_clock = 3.0
 		return
+	if not _valid_target(target, active):
+		target = _nearest_target(active)
 	if weapon == FREEDOM:
 		freedom[active] = 0
 	var d := _direction()
 	var start: Vector2 = fighters[active].pos + Vector2(0, -27) + d * 30
-	projectile = {"pos": start, "vel": d * (250 + power * 5.2), "age": 0.0, "weapon": weapon, "bounces": 0, "owner": active, "target": 1 - active}
+	projectile = {"pos": start, "vel": d * (250 + power * 5.2), "age": 0.0, "weapon": weapon, "bounces": 0, "owner": active, "target": target}
 	fragments.clear()
 	trail.clear()
 	shots += 1
@@ -401,8 +541,8 @@ func _step_projectile(delta: float) -> void:
 
 func _direct_target(bullet: Dictionary, point: Vector2) -> int:
 	var owner := int(bullet.get("owner", active))
-	for i in range(2):
-		if int(bullet.weapon) == FREEDOM and i != int(bullet.get("target", 1 - owner)):
+	for i in range(fighters.size()):
+		if int(bullet.weapon) == FREEDOM and i != int(bullet.get("target", _nearest_target(owner))):
 			continue
 		if fighters[i].hp > 0 and (i != owner or bullet.age > 0.3) and point.distance_to(fighters[i].pos + Vector2(0, -19)) < 20:
 			return i
@@ -482,12 +622,13 @@ func _step_main_projectile(delta: float) -> void:
 
 func _burst_banana(point: Vector2, impact: bool = false) -> void:
 	var owner := int(projectile.owner)
+	var selected_target := int(projectile.target)
 	var inherited: Vector2 = projectile.vel * 0.16
 	projectile.clear()
 	trail.clear()
 	for n in range(BANANA_FRAGMENTS):
 		var velocity := Vector2((n - 2) * 95.0, -190.0 - (2 - abs(n - 2)) * 34.0) + inherited
-		fragments.append({"pos": point + Vector2((n - 2) * 4, -7), "vel": velocity, "age": 0.0, "weapon": BANANA_FRAGMENT, "bounces": 0, "owner": owner, "target": 1 - owner})
+		fragments.append({"pos": point + Vector2((n - 2) * 4, -7), "vel": velocity, "age": 0.0, "weapon": BANANA_FRAGMENT, "bounces": 0, "owner": owner, "target": selected_target})
 	_emit(point, GOLD, 24, 170)
 	_sound("bounce")
 	toast = "BANANREGN! Fem små överraskningar."
@@ -537,7 +678,7 @@ func _explode(p: Vector2, radius: float) -> void:
 func _blast(p: Vector2, radius: float, max_damage: int, knockback: bool) -> void:
 	carve(p, radius)
 	shake = 9.0 if max_damage > 20 else 4.0
-	for i in range(2):
+	for i in range(fighters.size()):
 		var f: Dictionary = fighters[i]
 		var dist: float = p.distance_to(f.pos + Vector2(0, -16))
 		if dist < radius + 35 and f.hp > 0:
@@ -562,6 +703,8 @@ func carve(p: Vector2, radius: float) -> void:
 			elif distance < radius + 3 and _solid(Vector2(x, y)):
 				terrain.set_pixel(x, y, Color("9c7180"))
 	terrain_texture.update(terrain)
+	if world3d != null:
+		world3d.carve_changed(p, radius)
 
 func _damage(i: int, amount: int) -> void:
 	if amount <= 0:
@@ -580,7 +723,12 @@ func _finish_turn() -> void:
 	_pending_aim.clear()
 	if _check_winner():
 		return
-	active = 1 - active
+	for offset in range(1, fighters.size() + 1):
+		var candidate := (active + offset) % fighters.size()
+		if fighters[candidate].hp > 0:
+			active = candidate
+			break
+	target = _nearest_target(active)
 	if weapon == FREEDOM and freedom[active] == 0:
 		weapon = ROCKET
 	turn += 1
@@ -588,7 +736,7 @@ func _finish_turn() -> void:
 	move_left = 170
 	turn_clock = 40
 	wind = rng.randf_range(-32, 32)
-	fighters[active].face = 1.0 if fighters[1 - active].pos.x > fighters[active].pos.x else -1.0
+	fighters[active].face = 1.0 if fighters[target].pos.x > fighters[active].pos.x else -1.0
 	angle = 46
 	power = 70
 	trail.clear()
@@ -597,9 +745,13 @@ func _finish_turn() -> void:
 	_sound("turn")
 
 func _check_winner() -> bool:
-	if fighters[0].hp > 0 and fighters[1].hp > 0:
+	var alive: Array[int] = []
+	for i in range(fighters.size()):
+		if fighters[i].hp > 0:
+			alive.append(i)
+	if alive.size() > 1:
 		return false
-	winner = -1 if fighters[0].hp <= 0 and fighters[1].hp <= 0 else (0 if fighters[0].hp > 0 else 1)
+	winner = -1 if alive.is_empty() else alive[0]
 	phase = "over"
 	banner_clock = 0
 	_sound("win")
@@ -609,6 +761,8 @@ func _check_winner() -> bool:
 
 func _process(delta: float) -> void:
 	_network_tick(delta)
+	if start_menu != null:
+		start_menu.visible = phase == "title" and not online
 	elapsed += delta
 	if last_size != get_viewport_rect().size:
 		_layout()
@@ -626,6 +780,8 @@ func _process(delta: float) -> void:
 		floaters[i].pos.y -= delta * 27
 		if floaters[i].life <= 0:
 			floaters.remove_at(i)
+	if world3d != null:
+		world3d.sync(self, delta)
 	queue_redraw()
 
 func _emit(p: Vector2, col: Color, count: int, speed: float) -> void:
@@ -634,7 +790,18 @@ func _emit(p: Vector2, col: Color, count: int, speed: float) -> void:
 		particles.append({"pos": p, "vel": Vector2.from_angle(rng.randf_range(-PI, PI)) * rng.randf_range(speed * 0.2, speed), "life": life, "max": life, "color": col, "size": rng.randf_range(2, 6)})
 
 func _input(event: InputEvent) -> void:
+	# Releases must not disappear when a menu/dialog takes focus mid-gesture.
+	if event is InputEventScreenTouch and not event.pressed:
+		pointers.erase(event.index)
+		_refresh_held()
+	elif event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and not event.pressed:
+		pointers.erase(-1)
+		_refresh_held()
 	if lobby != null and lobby.visible:
+		if event is InputEventKey and event.pressed and event.physical_keycode == KEY_ESCAPE:
+			lobby.request_leave()
+		return
+	if start_menu != null and start_menu.visible:
 		return
 	if event is InputEventKey and event.pressed and not event.echo:
 		match event.physical_keycode:
@@ -645,11 +812,14 @@ func _input(event: InputEvent) -> void:
 					fire()
 			KEY_J: _jump()
 			KEY_TAB: _weapon_action()
+			KEY_T: _target_action()
 			KEY_LEFT:
 				if phase == "title": _map_action(-1)
 			KEY_RIGHT:
 				if phase == "title": _map_action(1)
-			KEY_ESCAPE: help_open = not help_open
+			KEY_ESCAPE:
+				_clear_local_controls(true)
+				help_open = not help_open
 			KEY_R: _restart_action()
 			KEY_M: sound_on = not sound_on
 			KEY_ENTER:
@@ -693,6 +863,7 @@ func _pointer(p: Vector2, id: int, pressed: bool) -> void:
 			help_open = false
 		return
 	if buttons.help.has_point(p):
+		_clear_local_controls(true)
 		help_open = true
 		return
 	if buttons.sound.has_point(p):
@@ -713,11 +884,14 @@ func _pointer(p: Vector2, id: int, pressed: bool) -> void:
 		return
 	if phase != "aim" or not _can_control():
 		return
-	for action in ["left", "right", "jump", "angle_down", "angle_up", "power_down", "power_up", "weapon", "fire"]:
-		if buttons[action].has_point(p):
+	for action in ["left", "right", "jump", "angle_down", "angle_up", "power_down", "power_up", "weapon", "target", "fire"]:
+		if action == "target" and weapon != FREEDOM:
+			continue
+		if buttons.has(action) and buttons[action].has_point(p):
 			match action:
 				"jump": _jump()
 				"weapon": _weapon_action()
+				"target": _target_action()
 				"fire": fire()
 				_:
 					pointers[id] = action
@@ -741,12 +915,14 @@ func _aim_at(p: Vector2) -> void:
 	if absf(delta.x) > 0.01:
 		fighters[active].face = signf(delta.x)
 	angle = clampf(rad_to_deg(atan2(-delta.y, absf(delta.x))), 5, 85)
-	if online and net.seat == 1:
+	if online and net.seat > 0:
 		_pending_aim = [fighters[active].face, angle]
 
 func _restart_action() -> void:
+	_clear_local_controls(true)
 	if online:
-		_leave_online()
+		lobby.visible = true
+		lobby.request_leave()
 		return
 	# One click returns to the title; a separate start prevents accidental resets.
 	if phase != "title":
@@ -757,6 +933,13 @@ func _restart_action() -> void:
 		held.clear()
 	else:
 		start_game()
+
+func _clear_local_controls(send_neutral: bool = false) -> void:
+	pointers.clear()
+	held.clear()
+	_pending_aim.clear()
+	if send_neutral and online and net != null and net.seat > 0 and net.together() and active == net.seat and phase == "aim":
+		net.send_input({"move": 0.0, "angle_axis": 0.0, "power_axis": 0.0}, turn)
 
 func _round_rect(rect: Rect2, color: Color, radius: float = 12, border: Color = Color.TRANSPARENT, border_width: int = 0) -> void:
 	var style := StyleBoxFlat.new()
@@ -783,7 +966,7 @@ func _draw() -> void:
 	_draw_world()
 	draw_set_transform(ui_origin, 0, Vector2.ONE * ui_scale)
 	_draw_controls()
-	if phase == "title":
+	if phase == "title" and start_menu == null:
 		_draw_title()
 	elif phase == "over":
 		_draw_victory()
@@ -799,22 +982,25 @@ func _draw() -> void:
 func _online_header(include_room: bool) -> String:
 	if net == null or net.seat < 0:
 		return "ONLINE · PRIVAT RUM"
-	var role := "DANIEL" if net.seat == 0 else "JESUS"
+	var role := str(net.roster[net.seat].name).to_upper() if net.seat < net.roster.size() else "SPELARE"
 	return "ONLINE · %s · DU ÄR %s" % [net.room, role] if include_room else "ONLINE · DU ÄR " + role
 
 func _draw_header() -> void:
+	if fighters.size() > 2:
+		_draw_group_header()
+		return
 	if portrait:
 		_text("KRATERKOMPISAR", Vector2(44, 69), 40, GOLD, true)
 		_text("DANIEL × JESUS", Vector2(46, 101), 22, MUTED, true)
 		_text("?", Vector2(1070, 82), 48, CREAM, true, true)
 		_text("♫" if sound_on else "♪", Vector2(950, 82), 48, MINT if sound_on else MUTED, true, true)
 		_text("↻", Vector2(1190, 83), 54, MUTED, false, true)
-		for i in range(2):
+		for i in range(fighters.size()):
 			var xx := 44.0 + i * 604
-			var col: Color = MINT if i == 0 else PURPLE
+			var col: Color = _fighter_color(i)
 			var hp: int = fighters[i].hp if fighters.size() == 2 else 100
 			_round_rect(Rect2(xx, 134, 560, 112), Color("26283e"), 22, col if phase == "aim" and active == i else Color("3a3b50"), 3)
-			_text("DANIEL" if i == 0 else "JESUS", Vector2(xx + 28, 182), 31, CREAM, true)
+			_text(str(fighters[i].name).left(14).to_upper(), Vector2(xx + 28, 182), 31, CREAM, true)
 			_text("FREEDOM %d" % freedom[i], Vector2(xx + 284, 182), 22, GOLD if freedom[i] else MUTED, true)
 			_text("%d" % hp, Vector2(xx + 506, 182), 33, col, true, true)
 			_round_rect(Rect2(xx + 28, 209, 504, 10), Color("414154"), 5)
@@ -828,14 +1014,14 @@ func _draw_header() -> void:
 	_text("?", Vector2(1178, 56), 24, CREAM, true, true)
 	_text("♫" if sound_on else "♪", Vector2(1120, 56), 25, MINT if sound_on else MUTED, true, true)
 	_text("↻", Vector2(1232, 58), 30, MUTED, false, true)
-	for i in range(2):
+	for i in range(fighters.size()):
 		var xx := 400.0 + i * 350
-		var col: Color = MINT if i == 0 else PURPLE
+		var col: Color = _fighter_color(i)
 		var hp: int = fighters[i].hp if fighters.size() == 2 else 100
 		var highlight := phase == "aim" and i == active
 		_round_rect(Rect2(xx, 23, 310, 66), Color("26283e"), 15, col if highlight else Color("3a3b50"), 2 if highlight else 1)
 		draw_circle(Vector2(xx + 27, 46), 7, col)
-		_text("DANIEL" if i == 0 else "JESUS", Vector2(xx + 45, 51), 17, CREAM, true)
+		_text(str(fighters[i].name).left(16).to_upper(), Vector2(xx + 45, 51), 17, CREAM, true)
 		_text("F:%d" % freedom[i], Vector2(xx + 218, 51), 13, GOLD if freedom[i] else MUTED, true, true)
 		_text("%d" % hp, Vector2(xx + 282, 51), 18, col, true, true)
 		_round_rect(Rect2(xx + 21, 65, 268, 6), Color("414154"), 3)
@@ -849,7 +1035,45 @@ func _draw_header() -> void:
 		var mode_text := _online_header(true) if online else "LOKAL DUELL  •  2 SPELARE"
 		_text(mode_text, Vector2(1252, 113) - Vector2(FONT.get_string_size(mode_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 13).x, 0), 13, MUTED)
 
+func _draw_group_header() -> void:
+	if portrait:
+		_text("KRATERKOMPISAR", Vector2(44, 69), 40, GOLD, true)
+		_text("%d VÄNNER · EN ARENA" % fighters.size(), Vector2(46, 101), 22, MUTED, true)
+		_text("?", Vector2(1070, 82), 48, CREAM, true, true)
+		_text("♫" if sound_on else "♪", Vector2(950, 82), 48, MINT if sound_on else MUTED, true, true)
+		_text("↻", Vector2(1190, 83), 54, MUTED, false, true)
+	else:
+		_text("KRATERKOMPISAR", Vector2(28, 42), 26, GOLD, true)
+		_text("%d SPELARE · TUR %d" % [fighters.size(), turn], Vector2(28, 67), 14, MUTED, true)
+		buttons.help = Rect2(228, 76, 54, 44)
+		buttons.sound = Rect2(102, 76, 54, 44)
+		buttons.restart = Rect2(164, 76, 54, 44)
+		_text("?", Vector2(255, 107), 26, CREAM, true, true)
+		_text("♫" if sound_on else "♪", Vector2(129, 107), 26, MINT, true, true)
+		_text("↻", Vector2(191, 107), 28, MUTED, false, true)
+	for i in range(fighters.size()):
+		var column := i % 3
+		var row := int(i / 3)
+		var r := Rect2(44 + column * 402, 134 + row * 94, 386, 84) if portrait else Rect2(350 + column * 303, 14 + row * 45, 290, 40)
+		var color := _fighter_color(i)
+		var alive: bool = fighters[i].hp > 0
+		_round_rect(r, Color("26283e"), 12, color if i == active and phase == "aim" else Color("3a3b50"), 2)
+		var font_size := 25 if portrait else 18
+		_text(str(fighters[i].name).left(14), r.position + Vector2(14, 33 if portrait else 24), font_size, color if alive else MUTED, true)
+		_text(str(fighters[i].hp) if alive else "UTE", r.position + Vector2(r.size.x - 35, 33 if portrait else 24), font_size, color if alive else MUTED, true, true)
+		var bar := Rect2(r.position + Vector2(14, 55 if portrait else 31), Vector2(r.size.x - 28, 8 if portrait else 4))
+		_round_rect(bar, Color("414154"), 3)
+		bar.size.x *= float(fighters[i].hp) / 100.0
+		if bar.size.x > 0:
+			_round_rect(bar, color, 3)
+		if freedom[i] > 0:
+			_text("F", r.position + Vector2(r.size.x - 76, 33 if portrait else 24), font_size, GOLD, true)
+	_text(_online_header(not portrait) if online else "LOKAL MATCH", Vector2(640 if portrait else 800, 362 if portrait else 118), 23 if portrait else 13, MUTED, true, true)
+
 func _draw_world() -> void:
+	if world3d != null:
+		_draw_3d_world()
+		return
 	MapThemes.draw_background(self, map_id, elapsed)
 	draw_texture(terrain_texture, Vector2.ZERO)
 	# Flowers and tufts survive only while their ground survives.
@@ -867,7 +1091,7 @@ func _draw_world() -> void:
 	for n in range(trail.size()):
 		if trail[n].y > 0:
 			draw_circle(trail[n], 2.8 * float(n + 1) / maxf(1, trail.size()), Color(1, 0.95, 0.82, 0.45 * float(n + 1) / maxf(1, trail.size())))
-	for i in range(2):
+	for i in range(fighters.size()):
 		if fighters[i].hp > 0:
 			_draw_character(i, fighters[i].pos, 1.25 if portrait else 1.0, fighters[i].face, true)
 		elif fighters[i].pos.y < WATER:
@@ -894,6 +1118,42 @@ func _draw_world() -> void:
 		var x := fmod(n * 97 + elapsed * 8, 1280)
 		draw_line(Vector2(x, 454 + (n % 3) * 5), Vector2(x + 31, 454 + (n % 3) * 5), MapThemes.wave_color(map_id).darkened(0.2), 2)
 	# Wind badge.
+	_round_rect(Rect2(1074, 18, 179, 42), Color(0.99, 0.94, 0.84, 0.84), 21)
+	_text("VIND  %s %d" % ["→" if wind >= 0 else "←", int(absf(wind))], Vector2(1164, 46), 16, INK, true, true)
+
+func _draw_3d_world() -> void:
+	draw_texture_rect(world3d.get_texture(), Rect2(0, 0, WW, WH), false)
+	# Only readable tactical annotations stay on the 2D canvas.
+	if phase == "aim":
+		_draw_aim()
+	for n in range(trail.size()):
+		if trail[n].y > 0:
+			draw_circle(trail[n], 2.8 * float(n + 1) / maxf(1, trail.size()), Color(1, 0.95, 0.82, 0.45 * float(n + 1) / maxf(1, trail.size())))
+	for i in range(fighters.size()):
+		if fighters[i].hp <= 0:
+			continue
+		var p: Vector2 = fighters[i].pos
+		var col: Color = _fighter_color(i)
+		var name_label := str(fighters[i].name).left(12)
+		var label_width := clampf(BOLD.get_string_size(name_label, HORIZONTAL_ALIGNMENT_LEFT, -1, 13).x + 18.0, 96, 186)
+		if i == active and phase == "aim":
+			var arrow := p + Vector2(0, -108 + sin(elapsed * 4) * 3)
+			draw_colored_polygon(PackedVector2Array([arrow + Vector2(-7, -7), arrow + Vector2(7, -7), arrow + Vector2(0, 2)]), col)
+		_round_rect(Rect2(p + Vector2(-label_width * 0.5, -96), Vector2(label_width, 23)), INK, 11)
+		_text(name_label, p + Vector2(0, -79), 13, col, true, true)
+		_round_rect(Rect2(p + Vector2(-26, -69), Vector2(52, 4)), Color("514959"), 2)
+		_round_rect(Rect2(p + Vector2(-26, -69), Vector2(52.0 * fighters[i].hp / 100, 4)), col, 2)
+	var rendered: Array = fragments.duplicate()
+	if not projectile.is_empty():
+		rendered.append(projectile)
+	for bullet in rendered:
+		if bullet.pos.y < 3:
+			_draw_projectile(bullet)
+		elif int(bullet.weapon) == FREEDOM:
+			var target: Vector2 = fighters[int(bullet.target)].pos + Vector2(0, -19)
+			draw_arc(target, 28, elapsed * 3, elapsed * 3 + PI * 1.5, 24, Color("83d9fa"), 2, true)
+	for f in floaters:
+		_text(f.text, f.pos, 25, f.color, true, true)
 	_round_rect(Rect2(1074, 18, 179, 42), Color(0.99, 0.94, 0.84, 0.84), 21)
 	_text("VIND  %s %d" % ["→" if wind >= 0 else "←", int(absf(wind))], Vector2(1164, 46), 16, INK, true, true)
 
@@ -932,7 +1192,7 @@ func _draw_projectile(bullet: Dictionary) -> void:
 func _draw_character(i: int, p: Vector2, s: float, face: float, label: bool) -> void:
 	var bounce := sin(elapsed * 3.3 + i) * 1.2
 	var center := p + Vector2(0, -24 * s + bounce)
-	var col: Color = MINT if i == 0 else PURPLE
+	var col: Color = _fighter_color(i)
 	draw_ellipse_shadow(p + Vector2(0, 2 * s), Vector2(22, 5) * s)
 	# Boots and short limbs.
 	for side in [-1, 1]:
@@ -1010,21 +1270,25 @@ func _weapon_hint() -> String:
 	return ["Raket · direktträff låser upp Freedom", "Studsbomb · studsar, sedan BOOM", "Banan · fem explosiva småbananer", "Målsökande · exakt 49 skada" if freedom[active] else "LÅST · direktträffa motståndaren först"][weapon]
 
 func _draw_controls() -> void:
-	var col: Color = MINT if active == 0 else PURPLE
+	var col: Color = _fighter_color(active)
 	var live := phase == "aim"
+	if compact_landscape:
+		_draw_compact_controls(col, live)
+		return
 	var info_y := panel_y + 23
-	_text(("JESUS TUR" if active == 1 else "DANIELS TUR") if live else ("SKOTTET ÄR I LUFTEN…" if phase == "flying" else "DANIEL + JESUS = KRATERKOMPISAR"), Vector2(28, info_y), 16 if not portrait else 28, col, true)
+	_text(("%sS TUR" % str(fighters[active].name).to_upper()) if live else ("SKOTTET ÄR I LUFTEN…" if phase == "flying" else "KRATERKOMPISAR · %d SPELARE" % fighters.size()), Vector2(28, info_y), 16 if not portrait else 28, col, true)
 	if online and live and not _can_control():
 		_text("VÄNTA PÅ DIN TUR", Vector2(640, info_y), 16 if not portrait else 24, MUTED, true, true)
 	var time_text := "%02d s" % int(ceil(turn_clock)) if live else ""
 	_text(time_text, Vector2(1248, info_y), 16 if not portrait else 28, GOLD if turn_clock < 10 else MUTED, true, true)
 	if portrait:
+		var extra := 90.0 if fighters.size() > 2 else 0.0
 		_text("FÖRFLYTTA DIG", Vector2(44, panel_y + 68), 25, MUTED, true)
 		_text("DITT VAPEN", Vector2(638, panel_y + 68), 25, MUTED, true)
-		_text("VINKEL", Vector2(308, panel_y + 303), 28, MUTED, true, true)
-		_text("KRAFT", Vector2(940, panel_y + 303), 28, MUTED, true, true)
-		_text("%d°" % int(angle), Vector2(308, panel_y + 422), 55, CREAM, true, true)
-		_text("%d%%" % int(power), Vector2(940, panel_y + 422), 55, GOLD, true, true)
+		_text("VINKEL", Vector2(308, panel_y + 303 + extra), 28, MUTED, true, true)
+		_text("KRAFT", Vector2(940, panel_y + 303 + extra), 28, MUTED, true, true)
+		_text("%d°" % int(angle), Vector2(308, panel_y + 422 + extra), 55, CREAM, true, true)
+		_text("%d%%" % int(power), Vector2(940, panel_y + 422 + extra), 55, GOLD, true, true)
 		_button("left", "←", Color("303249"), CREAM, 58)
 		_button("right", "→", Color("303249"), CREAM, 58)
 		_button("jump", "HOPPA", Color("303249"), CREAM, 29)
@@ -1034,8 +1298,8 @@ func _draw_controls() -> void:
 			_button(k, "+", Color("303249"), CREAM, 48)
 		_button("weapon", _weapon_label(), Color("373249"), GOLD if weapon != FREEDOM or freedom[active] else MUTED, 32)
 		_button("fire", "SKJUT!  ↗", GOLD, INK, 46)
-		_text(_weapon_hint(), Vector2(640, panel_y + 770), 26, GOLD if weapon == FREEDOM else MUTED, false, true)
-		_text("Liggande skärm ger större spelplan.", Vector2(640, panel_y + 814), 25, MUTED, false, true)
+		_text(_weapon_hint(), Vector2(640, panel_y + 770 + extra), 26, GOLD if weapon == FREEDOM else MUTED, false, true)
+		_text("Liggande skärm ger större spelplan.", Vector2(640, panel_y + 814 + extra), 25, MUTED, false, true)
 		_text("BYGGT I GODOT  •  ORIGINALGRAFIK  •  BARA EN DUELL TILL", Vector2(640, maxf(panel_y + 910, layout_h - 55)), 19, Color("6e708d"), true, true)
 	else:
 		_text("FLYTTA", Vector2(28, panel_y + 52), 12, MUTED, true)
@@ -1060,6 +1324,30 @@ func _draw_controls() -> void:
 	var bar_width := 244.0 if not portrait else 526.0
 	_round_rect(Rect2(bar_pos, Vector2(bar_width, 4)), Color("36384d"), 2)
 	_round_rect(Rect2(bar_pos, Vector2(maxf(1, bar_width * move_left / 170), 4)), col, 2)
+	_draw_target_button()
+
+func _draw_target_button() -> void:
+	if fighters.size() > 2 and weapon == FREEDOM and buttons.has("target"):
+		_button("target", "MÅL: %s  ↻" % str(fighters[target].name).left(12), Color("373249"), _fighter_color(target), 28 if portrait else 22)
+
+func _draw_compact_controls(color: Color, live: bool) -> void:
+	_text(("%sS TUR" % str(fighters[active].name).to_upper()) if live else "SKOTTET ÄR I LUFTEN…", Vector2(20, panel_y + 29), 23, color, true)
+	_text("%02d s" % int(ceil(turn_clock)) if live else "", Vector2(984, panel_y + 29), 23, GOLD, true, true)
+	_text("FLYTTA / HOPPA", Vector2(186, panel_y + 62), 18, MUTED, true, true)
+	_text("VINKEL", Vector2(544, panel_y + 62), 18, MUTED, true, true)
+	_text("KRAFT", Vector2(870, panel_y + 62), 18, MUTED, true, true)
+	_button("left", "←", Color("303249"), CREAM, 38)
+	_button("right", "→", Color("303249"), CREAM, 38)
+	_button("jump", "HOPP", Color("303249"), CREAM, 22)
+	for action in ["angle_down", "power_down"]:
+		_button(action, "−", Color("303249"), CREAM, 38)
+	for action in ["angle_up", "power_up"]:
+		_button(action, "+", Color("303249"), CREAM, 38)
+	_text("%d°" % int(angle), Vector2(544, panel_y + 139), 34, CREAM, true, true)
+	_text("%d%%" % int(power), Vector2(870, panel_y + 139), 34, GOLD, true, true)
+	_button("weapon", ["RAKET", "BOMB", "BANAN", "FREEDOM ×%d" % freedom[active]][weapon], Color("373249"), GOLD, 23)
+	_button("fire", "SKJUT!", GOLD, INK, 30)
+	_draw_target_button()
 
 func _draw_title() -> void:
 	draw_rect(Rect2(0, world_top, 1280, WH), Color(0.09, 0.10, 0.17, 0.25))
@@ -1083,7 +1371,10 @@ func _draw_victory() -> void:
 	_text("Oavgjort!" if winner < 0 else "%s vann!" % fighters[winner].name, Vector2(640, world_top + 151), 52, CREAM, true, true)
 	_text("%d skott. En bana med helt ny planlösning." % shots, Vector2(640, world_top + 192), 21, MUTED, false, true)
 	if winner >= 0:
-		_draw_character(winner, Vector2(640, world_top + 279), 1.4, 1, false)
+		if world3d == null:
+			_draw_character(winner, Vector2(640, world_top + 279), 1.4, 1, false)
+		else:
+			_text("★", Vector2(640, world_top + 273), 66, MINT if winner == 0 else PURPLE, true, true)
 	_button("start", ("NYTT RUM  →" if online else "EN DUELL TILL  ↻"), GOLD, INK, 24 if not portrait else 32)
 
 func _draw_help() -> void:
@@ -1135,10 +1426,12 @@ func _sound(kind: String) -> void:
 
 ## A deterministic, read-only snapshot used by the test harness.
 func test_snapshot() -> Dictionary:
-	return {"phase": phase, "turn": turn, "active": active, "hp": [fighters[0].hp, fighters[1].hp], "angle": angle, "power": power, "shots": shots, "winner": winner, "projectile": not projectile.is_empty(), "terrain_center": _solid(Vector2(640, 400)), "size": get_viewport_rect().size}
+	return {"phase": phase, "turn": turn, "active": active, "hp": fighters.map(func(f): return f.hp), "angle": angle, "power": power, "shots": shots, "winner": winner, "projectile": not projectile.is_empty(), "terrain_center": _solid(Vector2(640, 400)), "size": get_viewport_rect().size}
 
 ## Online mode. Only Daniel's device simulates. Jesus sends bounded controls.
 func _can_control() -> bool:
+	if help_open or (lobby != null and lobby.visible):
+		return false
 	return not online or (net != null and net.together() and net.seat == active and phase == "aim" and not _online_paused())
 
 func _start_action() -> void:
@@ -1152,7 +1445,7 @@ func _start_action() -> void:
 func _weapon_action() -> void:
 	if phase != "aim" or not _can_control():
 		return
-	if online and net.seat == 1:
+	if online and net.seat > 0:
 		_send_guest_input("weapon")
 	else:
 		weapon = (weapon + 1) % 4
@@ -1169,7 +1462,10 @@ func _open_online() -> void:
 	_remote_held.clear()
 	pointers.clear()
 	held.clear()
+	lobby.set_map(map_id)
 	lobby.visible = true
+	if start_menu != null:
+		start_menu.hide()
 	lobby.refresh(net)
 
 func _leave_online() -> void:
@@ -1185,6 +1481,12 @@ func _leave_online() -> void:
 	pointers.clear()
 	held.clear()
 	help_open = false
+	player_names = ["Daniel", "Jesus"]
+	_spawn_fighters()
+	_layout()
+	if start_menu != null:
+		start_menu.set_map(map_id)
+		start_menu.show()
 
 func _copy_room() -> void:
 	if not net.room.is_empty():
@@ -1197,6 +1499,9 @@ func _network_changed() -> void:
 	_remote_held.clear()
 	pointers.clear()
 	held.clear()
+	if not net.started and not net.room.is_empty() and net.map_id != map_id:
+		_set_preview_map(net.map_id)
+		lobby.set_map(map_id)
 	if net.together() and net.seat == 0 and not _online_started:
 		start_game()
 		_online_started = true
@@ -1216,7 +1521,7 @@ func _network_welcome(data: Dictionary) -> void:
 func _network_received(data: Dictionary) -> void:
 	if not online:
 		return
-	if data.get("type") == "state" and net.seat == 1:
+	if data.get("type") == "state" and net.seat > 0:
 		var sequence := int(data.get("seq", -1))
 		if sequence <= _last_received_seq:
 			return
@@ -1237,16 +1542,16 @@ func _online_paused() -> bool:
 func _refresh_network_overlay() -> void:
 	if not online:
 		return
-	lobby.visible = not net.together() or not _online_started or _online_paused()
+	lobby.visible = lobby.is_confirming_leave() or not net.together() or not _online_started or _online_paused()
 	lobby.refresh(net)
 	if net.together() and _online_started and _online_paused():
 		held.clear()
 		pointers.clear()
 		_pending_aim.clear()
-		lobby.message.text = "Matchen är pausad. Be Daniel öppna spelfliken igen." if net.seat == 1 else "Matchen är pausad medan spelfönstret är i bakgrunden."
+		lobby.message.text = "Matchen är pausad. Be värden öppna spelfliken igen." if net.seat > 0 else "Matchen är pausad medan spelfönstret är i bakgrunden."
 
 func _network_tick(delta: float) -> void:
-	if online and net != null and net.seat == 1 and _online_started:
+	if online and net != null and net.seat > 0 and _online_started:
 		_state_age += delta
 		if _state_age > 5:
 			held.clear()
@@ -1273,7 +1578,7 @@ func _send_state(commit: bool) -> void:
 	net.send_state(network_snapshot(), commit)
 
 func _send_guest_input(action: String = "") -> void:
-	if not online or net.seat != 1 or not net.together() or active != 1 or phase != "aim" or _online_paused():
+	if not online or net.seat <= 0 or not net.together() or active != net.seat or phase != "aim" or _online_paused():
 		return
 	var controls := {"move": 0.0, "angle_axis": 0.0, "power_axis": 0.0}
 	if not help_open:
@@ -1288,31 +1593,49 @@ func _send_guest_input(action: String = "") -> void:
 		_pending_aim.clear()
 
 func _apply_remote_input(data: Dictionary) -> bool:
-	if not online or net.seat != 0 or not net.together() or phase != "aim" or active != 1 or not _host_focused:
+	if not online or net.seat != 0 or not net.together() or phase != "aim" or active <= 0 or not _host_focused:
 		return false
-	if int(data.get("seat", -1)) != 1 or int(data.get("turn", -1)) != turn:
+	for key in ["seat", "turn", "seq"]:
+		if not _number_in(data.get(key), 0, 1000000000) or float(data[key]) != floorf(float(data[key])):
+			return false
+	if data.get("action", "") not in ["", "jump", "weapon", "target", "fire"]:
+		return false
+	var sender := int(data.get("seat", -1))
+	if sender != active or int(data.get("turn", -1)) != turn:
 		return false
 	var sequence := int(data.get("seq", -1))
-	if sequence <= _remote_input_seq:
+	if sequence <= int(_remote_input_sequences.get(sender, -1)):
 		return false
 	for key in ["move", "angle_axis", "power_axis"]:
 		if not _number_in(data.get(key, 0), -1, 1):
 			return false
 	if data.has("aim") and not _valid_pair(data.aim, -85, 85):
 		return false
+	if data.has("target") and (not _number_in(data.target, 0, fighters.size() - 1) or float(data.target) != floorf(float(data.target)) or not _valid_target(int(data.target), active)):
+		return false
 	_remote_input_seq = sequence
+	_remote_input_sequences[sender] = sequence
 	_remote_input_age = 0
+	if data.has("target"):
+		target = int(data.target)
 	var movement := float(data.get("move", 0))
 	var angle_axis := float(data.get("angle_axis", 0))
 	var power_axis := float(data.get("power_axis", 0))
 	_remote_held = {"right": maxf(movement, 0), "left": maxf(-movement, 0), "angle_up": maxf(angle_axis, 0), "angle_down": maxf(-angle_axis, 0), "power_up": maxf(power_axis, 0), "power_down": maxf(-power_axis, 0)}
 	if data.has("aim"):
-		fighters[1].face = 1.0 if float(data.aim[0]) >= 0 else -1.0
+		fighters[active].face = 1.0 if float(data.aim[0]) >= 0 else -1.0
 		angle = clampf(float(data.aim[1]), 5, 85)
 	_applying_remote = true
 	match str(data.get("action", "")):
 		"jump": _jump()
 		"weapon": weapon = (weapon + 1) % 4
+		"target":
+			if not data.has("target"):
+				for offset in range(1, fighters.size() + 1):
+					var candidate := (target + offset) % fighters.size()
+					if _valid_target(candidate, active):
+						target = candidate
+						break
 		"fire": fire()
 	_applying_remote = false
 	return true
@@ -1343,7 +1666,7 @@ func network_snapshot() -> Dictionary:
 	var path: Array = []
 	for point in trail:
 		path.append([point.x, point.y])
-	return {"schema": 2, "map_id": map_id, "freedom": freedom.duplicate(), "fragments": pieces, "paused": (not _host_focused if net != null and net.seat == 0 else _host_paused) if online else false, "phase": phase, "turn": turn, "active": active, "angle": _wire_float(angle), "power": _wire_float(power), "weapon": weapon, "wind": _wire_float(wind), "move_left": _wire_float(move_left), "turn_clock": _wire_float(turn_clock), "settle_clock": _wire_float(settle_clock), "winner": winner, "shots": shots, "hits": hits, "fighters": people, "projectile": _bullet_snapshot(projectile), "terrain_version": craters.size(), "craters": craters.duplicate(true), "trail": path}
+	return {"schema": 3, "target": target, "map_id": map_id, "freedom": freedom.duplicate(), "fragments": pieces, "paused": (not _host_focused if net != null and net.seat == 0 else _host_paused) if online else false, "phase": phase, "turn": turn, "active": active, "angle": _wire_float(angle), "power": _wire_float(power), "weapon": weapon, "wind": _wire_float(wind), "move_left": _wire_float(move_left), "turn_clock": _wire_float(turn_clock), "settle_clock": _wire_float(settle_clock), "winner": winner, "shots": shots, "hits": hits, "fighters": people, "projectile": _bullet_snapshot(projectile), "terrain_version": craters.size(), "craters": craters.duplicate(true), "trail": path}
 
 func _number_in(value, low: float, high: float) -> bool:
 	return (value is float or value is int) and is_finite(float(value)) and float(value) >= low and float(value) <= high
@@ -1352,33 +1675,48 @@ func _valid_pair(value, low: float = -5000, high: float = 5000) -> bool:
 	return value is Array and value.size() == 2 and _number_in(value[0], low, high) and _number_in(value[1], low, high)
 
 func _valid_snapshot(data: Dictionary) -> bool:
-	if data.get("schema") != 2 or data.get("phase") not in ["aim", "flying", "settle", "over"]:
+	if data.get("schema") != 3 or data.get("phase") not in ["aim", "flying", "settle", "over"]:
 		return false
 	if data.has("paused") and not data.paused is bool:
 		return false
-	var ranges := {"turn": [1, 100000], "active": [0, 1], "angle": [5, 85], "power": [12, 100], "weapon": [0, 3], "wind": [-100, 100], "move_left": [0, 170], "turn_clock": [-1, 40], "settle_clock": [-10, 10], "winner": [-1, 1], "shots": [0, 100000], "hits": [0, 200000]}
+	if not data.get("fighters") is Array or data.fighters.size() < 2 or data.fighters.size() > 6:
+		return false
+	var count: int = data.fighters.size()
+	if online and net != null and net.roster.size() >= 2 and count != net.roster.size():
+		return false
+	var ranges := {"turn": [1, 100000], "active": [0, count - 1], "target": [0, count - 1], "angle": [5, 85], "power": [12, 100], "weapon": [0, 3], "wind": [-100, 100], "move_left": [0, 170], "turn_clock": [-1, 40], "settle_clock": [-10, 10], "winner": [-1, count - 1], "shots": [0, 100000], "hits": [0, 200000]}
 	for key in ranges:
 		if not _number_in(data.get(key), ranges[key][0], ranges[key][1]):
 			return false
-	for key in ["turn", "active", "weapon", "winner", "shots", "hits"]:
+	for key in ["turn", "active", "target", "weapon", "winner", "shots", "hits"]:
 		if float(data[key]) != floorf(float(data[key])):
 			return false
+	if int(data.target) == int(data.active):
+		return false
 	if not _number_in(data.get("map_id"), 0, MapThemes.count() - 1) or float(data.map_id) != floorf(float(data.map_id)):
 		return false
-	if not data.get("freedom") is Array or data.freedom.size() != 2:
+	if not data.get("freedom") is Array or data.freedom.size() != count:
 		return false
 	for ammo in data.freedom:
 		if not _number_in(ammo, 0, 1) or float(ammo) != floorf(float(ammo)):
 			return false
+	var alive: Array[int] = []
+	for index in range(count):
+		var f = data.fighters[index]
+		if not f is Dictionary or not _valid_pair(f.get("pos")) or not _valid_pair(f.get("vel")) or not _number_in(f.get("hp"), 0, 100) or float(f.hp) != floorf(float(f.hp)) or f.get("face") not in [-1.0, 1.0] or not f.get("ground") is bool:
+			return false
+		if f.hp > 0:
+			alive.append(index)
+	if data.phase == "aim" and (not int(data.active) in alive or not int(data.target) in alive):
+		return false
+	if data.phase == "over" and (alive.size() > 1 or int(data.winner) != (-1 if alive.is_empty() else alive[0])):
+		return false
+	if data.phase != "over" and int(data.winner) != -1:
+		return false
 	if not data.get("fragments") is Array or data.fragments.size() > BANANA_FRAGMENTS:
 		return false
 	for fragment in data.fragments:
-		if not _valid_bullet(fragment, true):
-			return false
-	if not data.get("fighters") is Array or data.fighters.size() != 2:
-		return false
-	for f in data.fighters:
-		if not f is Dictionary or not _valid_pair(f.get("pos")) or not _valid_pair(f.get("vel")) or not _number_in(f.get("hp"), 0, 100) or f.get("face") not in [-1.0, 1.0] or not f.get("ground") is bool:
+		if not _valid_bullet(fragment, true, count):
 			return false
 	if not data.get("craters") is Array or data.craters.size() > 500 or data.get("terrain_version") != data.craters.size():
 		return false
@@ -1392,18 +1730,18 @@ func _valid_snapshot(data: Dictionary) -> bool:
 			return false
 	if not data.get("projectile") is Dictionary:
 		return false
-	if not data.projectile.is_empty() and not _valid_bullet(data.projectile, false):
-		return false
-	return true
+	return data.projectile.is_empty() or _valid_bullet(data.projectile, false, count)
 
-func _valid_bullet(bullet, fragment: bool) -> bool:
+func _valid_bullet(bullet, fragment: bool, count: int = -1) -> bool:
+	if count < 0:
+		count = fighters.size()
 	if not bullet is Dictionary or not _valid_pair(bullet.get("pos")) or not _valid_pair(bullet.get("vel")) or not _number_in(bullet.get("age"), 0, 10):
 		return false
-	var ranges := {"weapon": [4, 4] if fragment else [0, 3], "bounces": [0, 4], "owner": [0, 1], "target": [0, 1]}
+	var ranges := {"weapon": [4, 4] if fragment else [0, 3], "bounces": [0, 4], "owner": [0, count - 1], "target": [0, count - 1]}
 	for key in ranges:
 		if not _number_in(bullet.get(key), ranges[key][0], ranges[key][1]) or float(bullet[key]) != floorf(float(bullet[key])):
 			return false
-	return int(bullet.target) == 1 - int(bullet.owner)
+	return int(bullet.target) != int(bullet.owner)
 
 func apply_network_snapshot(data: Dictionary) -> bool:
 	# Validate everything before changing the scene. Never decode executable objects.
@@ -1426,16 +1764,23 @@ func apply_network_snapshot(data: Dictionary) -> bool:
 	for i in range(craters.size(), data.craters.size()):
 		var crater: Array = data.craters[i]
 		carve(Vector2(float(crater[0]), float(crater[1])), float(crater[2]))
-	for i in range(2):
+	var old_fighters := fighters.duplicate(true)
+	var old_freedom := freedom.duplicate()
+	fighters.clear()
+	freedom.clear()
+	for i in range(data.fighters.size()):
 		var f: Dictionary = data.fighters[i]
-		var damage := int(fighters[i].hp) - int(f.hp)
-		fighters[i] = {"name": "Daniel" if i == 0 else "Jesus", "pos": Vector2(float(f.pos[0]), float(f.pos[1])), "vel": Vector2(float(f.vel[0]), float(f.vel[1])), "hp": int(f.hp), "face": float(f.face), "ground": bool(f.ground)}
+		var name_text := str(net.roster[i].name) if online and net != null and i < net.roster.size() else (player_names[i] if i < player_names.size() else "Spelare %d" % (i + 1))
+		var damage := (int(old_fighters[i].hp) if i < old_fighters.size() else 100) - int(f.hp)
+		fighters.append({"name": name_text, "pos": Vector2(float(f.pos[0]), float(f.pos[1])), "vel": Vector2(float(f.vel[0]), float(f.vel[1])), "hp": int(f.hp), "face": float(f.face), "ground": bool(f.ground)})
+		freedom.append(int(data.freedom[i]))
 		if damage > 0:
 			floaters.append({"pos": fighters[i].pos + Vector2(0, -63), "text": "−%d" % damage, "life": 1.7, "color": GOLD})
-	for i in range(2):
-		if int(data.freedom[i]) > freedom[i]:
+		if i < old_freedom.size() and freedom[i] > old_freedom[i]:
 			_show_freedom_reward(i)
-		freedom[i] = int(data.freedom[i])
+	target = int(data.target)
+	if old_fighters.size() != fighters.size():
+		_layout()
 	_host_paused = bool(data.get("paused", false))
 	phase = str(data.phase)
 	turn = int(data.turn)
@@ -1475,4 +1820,6 @@ func apply_network_snapshot(data: Dictionary) -> bool:
 		_pending_aim.clear()
 	if phase == "over" and old_phase != "over":
 		_sound("win")
+	if online and net != null:
+		net.accept_snapshot(data)
 	return true

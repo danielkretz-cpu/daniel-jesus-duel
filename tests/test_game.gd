@@ -90,6 +90,12 @@ func run() -> void:
 	check(game.phase == "aim" and game.fighters[1].hp == 100 and game.shots == 0, "Restart resets health, turns, projectile, and score")
 	check(game._solid(Vector2(640, 410)), "Restart rebuilds destroyed terrain")
 	game.help_open = true
+	var paused_state: Dictionary = game.network_snapshot()
+	game._jump()
+	game._weapon_action()
+	game._target_action()
+	game.fire()
+	check(game.network_snapshot() == paused_state, "Help ignores gameplay actions without altering the match")
 	var time_before: float = game.turn_clock
 	step(2)
 	check(game.turn_clock == time_before, "Help pauses the turn timer")

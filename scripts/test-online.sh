@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# End-to-end test: two real Godot clients against the actual local Worker runtime.
+# End-to-end test: two- and six-player real Godot matches against the actual Worker runtime.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
@@ -23,7 +23,7 @@ for n in $(seq 1 60); do
   sleep 0.25
 done
 if [[ "$ready" != true ]]; then cat .cache/logs/online-server.log; exit 1; fi
-"$GODOT" --headless --path "$ROOT" --script res://tests/test_online_live.gd -- "--server-url=ws://127.0.0.1:$PORT" 2>&1 | tee .cache/logs/online-live.log
+timeout "${ONLINE_TEST_TIMEOUT:-240}" "$GODOT" --headless --path "$ROOT" --script res://tests/test_online_live.gd -- "--server-url=ws://127.0.0.1:$PORT" 2>&1 | tee .cache/logs/online-live.log
 if grep -Eq '(^|[[:space:]])(SCRIPT ERROR:|ERROR:)|Parse Error:' .cache/logs/online-live.log; then
   echo 'Online integration failed; refusing to deploy.' >&2
   exit 1

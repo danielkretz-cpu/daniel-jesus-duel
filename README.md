@@ -1,20 +1,23 @@
 # Kraterkompisar
 
-En liten, färdig artilleriduell i **Godot 4.6.3**. Daniel och Jesus möts på fem egna, förstörbara arenor med originalgrafik och fyra vapen.
+En liten artilleriduell i **Godot 4.6.3** med riktiga **3D-figurer och 3D-miljöer**. Spela lokal duell eller bjud in upp till sex vänner till fem egna, förstörbara arenor med originalgrafik och fyra vapen. Spelet behåller sin lättstyrda sidovy och samma tvådimensionella rörelse, sikte och fysik.
 
 ## Spela
 
 Välj **Lokal duell** för att turas om på samma mobil eller dator. Välj **Online** för att spela på varsin skärm när onlineservern har aktiverats.
 
-Online skapar den första spelaren ett privat rum och spelar Daniel. Den andra skriver in den åttateckniga rumskoden och spelar Jesus. Inga spelarkonton behövs. Bara den som har turen kan styra sin figur. Skjut, lämna en krater och försök bli den sista överlevande.
+Online väljer alla ett eget namn. Värden skapar ett privat rum och delar en vanlig **vänlänk** eller den åttateckniga rumskoden. Länken förifyller rummet; vännen skriver sitt namn och väljer **Gå med**. Värden väljer arena och trycker **Starta matchen** när 2–6 spelare har anslutit. Inga spelarkonton behövs. Spelarna har olika färger, delar på turerna och utslagna spelare hoppas över. Den sista överlevande vinner.
 
-Om nätverket bryts pausas matchen. Använd **Återanslut** i samma öppna spelflik. Daniel behöver hålla sin spelflik öppen och i förgrunden, eftersom hans enhet räknar ut matchen. Om fliken laddas om eller stängs försvinner dess tillfälliga återanslutningsnyckel; skapa då ett nytt rum. Rum stängs efter två timmar.
+Vänlänkar innehåller bara den offentliga rumskoden. De innehåller aldrig spelarens privata återanslutningsnyckel. Webbens delningsknapp öppnar enhetens vanliga delningsruta när den stöds; kopiera länk och rumskod fungerar också.
+
+Om en levande spelare eller värden tappar nätverket pausas matchen. En utslagen gäst kan lämna utan att stoppa de andra, men värdens enhet måste vara kvar även om värdens figur är utslagen. Använd **Återanslut** i samma öppna spelflik. Värden behöver hålla sin spelflik öppen och i förgrunden eftersom den enheten räknar ut matchen. Om fliken laddas om eller stängs försvinner dess tillfälliga återanslutningsnyckel; skapa då ett nytt rum. Rum stängs efter två timmar. Spelarlistan och banan låses när matchen startar.
 
 - **A / D eller ← / →:** flytta. Varje tur har en begränsad gångsträcka.
 - **J:** hoppa.
 - **W / S eller ↑ / ↓:** ändra vinkel.
 - **Q / E:** ändra kraft.
 - **Tab:** byt mellan raket, studsbomb, banankluster och Freedom.
+- **T eller Mål-knappen:** välj en annan levande motståndare för Freedom. När en tur börjar väljs den närmaste motståndaren.
 - **Mellanslag:** skjut.
 - **M:** ljud av/på.
 - **Esc eller ?:** hjälp och paus.
@@ -28,9 +31,9 @@ Varje tur är 40 sekunder. Vinden påverkar skotten. Raketer exploderar vid trä
 
 - **Banankluster:** en banan spricker i fem fysiska småbananer vid toppen av kastet, efter 1,2 sekunder eller vid kollision. Varje småbanan exploderar och gör en egen krater. Huvudträffen ger högst 9 explosionsskada och varje del högst 11; terrängras och bottenfaror kan ge ytterligare skada.
 - **Freedom:** en direkt projektilträff på motståndaren ger en målsökande missil. Det gäller raket, studsbomb och banan/delbanan, men inte enbart explosionsradie eller självträff. Varje spelare kan spara högst en. Den förbrukas när den avfyras, söker motståndaren och ger exakt **49 direkt skada** vid träff, utan splash, knuff eller ny Freedom-belöning. Terräng kan stoppa den. Låst ammunition och antal visas i gränssnittet.
-- **Fem arenor:** Skymningsskäret (skärgård), Urtidsdjungeln (dinosaurieäventyr), Dubbelsolens öken (rymdvästern), Neonmetropolen (digital action) och Eldcitadellet (mörk fantasy). Banorna har olika höjdprofiler, färger och handritade miljöer med säkra startytor. Referenserna är filmgenrer, med egna motiv och inga kopierade filmtillgångar.
+- **Fem arenor:** Skymningsskäret (skärgård), Urtidsdjungeln (dinosaurieäventyr), Dubbelsolens öken (rymdvästern), Neonmetropolen (digital action) och Eldcitadellet (mörk fantasy). Banorna har olika höjdprofiler, färger och belysta lågpolygonmiljöer med säkra startytor. Referenserna är filmgenrer, med egna motiv och inga kopierade filmtillgångar.
 
-Välj bana med pilarna på startskärmen före en lokal match eller innan du skapar ett onlinerum. Värdens val gäller online. En ny duell återställer mark, ammunition och hälsa. Återanslutning behåller vald bana, kratrar, ammunition och alla flygande småbananer. Båda spelarna behöver samma spelversion; gamla rum stöds fortsatt av servern men blandade versioner kan inte dela rum.
+Välj bana med pilarna på startskärmen före en lokal match eller innan du skapar ett onlinerum. Värdens val gäller online. En ny duell återställer mark, ammunition och hälsa. Återanslutning behåller den egna platsen, alla namn, vald bana, kratrar, ammunition, mål och alla flygande småbananer. Båda spelarna behöver samma spelversion; gamla rum stöds fortsatt av servern men blandade versioner kan inte dela rum.
 
 ## Öppna i Godot
 
@@ -47,6 +50,10 @@ godot --headless --path . --editor --import --quit
 godot --headless --path . --script res://tests/test_game.gd
 godot --headless --path . --script res://tests/test_network.gd
 godot --headless --path . --script res://tests/test_expansion.gd
+godot --headless --path . --script res://tests/test_3d.gd
+godot --headless --path . --script res://tests/test_multiplayer_six.gd
+godot --headless --path . --script res://tests/test_menu.gd
+godot --headless --path . --script res://tests/test_animation.gd
 ```
 
 CI och byggskript beskrivs i [docs/deployment.md](docs/deployment.md). Webbversionen exporteras till `build/web/index.html` och måste serveras via HTTP(S), inte öppnas med `file://`.
@@ -61,13 +68,18 @@ python3 -m http.server 8000 --directory build/web
 
 ## Projektstruktur
 
-- `Game.gd`: spelfysik, turer, ammunition, förstörbar terräng, originalgrafik, ljud och responsivt gränssnitt.
-- `MapThemes.gd`: fem deterministiska terrängprofiler och egenritade filmmiljöer.
+- `Game.gd`: oförändrad 2D-spelfysik, turer, ammunition, pixelbaserad terräng, ljud och responsivt gränssnitt.
+- `World3D.gd`, `Projection3D.gd`: separat 3D-vy med fast ortografisk kamera och exakt projektion till spelkoordinaterna.
+- `Terrain3D.gd`: verklig extruderad terränggeometri. Varje kollisionspixel och hål bevaras; bara berörda terrängdelar byggs om efter explosioner.
+- `Fighter3D.gd`, `Projectile3D.gd`: animerade volymfigurer och projektiler, inklusive bananer och Freedom.
+- `Environment3D.gd`: fem belysta 3D-dioramor med fyr, dinosaurie, dubbla solar, neonstad och eldcitadell.
+- `MapThemes.gd`: fem deterministiska terrängprofiler och färgpaletter.
 - `Main.tscn`: huvudscenen.
-- `NetSession.gd`, `OnlineLobby.gd`: privat rumslobby och WebSocket-klient.
+- `NetSession.gd`: versionsstyrd WebSocket-klient och privat 2–6-spelarrum.
+- `StartMenu.gd`, `OnlineLobby.gd`, `MenuUI.gd`, `FriendInvite.gd`: tydlig meny, valda namn, fingerstora kontroller, vänlänkar och rumslobby.
 - `network_config.json`: offentlig serveradress, ingen hemlighet. Tom adress visar tydligt att online inte är aktiverat.
-- `online-server/`: Cloudflare Worker med privata tvåspelarrum och lokala tester.
-- `tests/test_online_live.gd`, `scripts/test-online.sh`: två riktiga Godot-klienter mot den lokala relayservern.
+- `online-server/`: Cloudflare Worker med privata 2–6-spelarrum och lokala tester.
+- `tests/test_online_live.gd`, `scripts/test-online.sh`: två- och sexklienttester med riktiga Godot-klienter mot den lokala relayservern.
 - `assets/`: ikon och paketerade typsnitt.
 - `tests/test_game.gd`: deterministiska tester som kör den riktiga Godot-scenen.
 - `scripts/`, `.github/`, `vercel.json`: bygg- och leveransflöde.
@@ -78,12 +90,16 @@ python3 -m http.server 8000 --directory build/web
 
 Daniel är en påhittad, tecknad äventyrare med grön mössa och gul halsduk, inte en fotobaserad avbildning. Jesus är en lavendelfärgad ring med ansikte och små ben, inspirerad av sin runda avatar. Alla figurer, landskap, effekter och ljud skapas i Godot. Blender används inte i denna version.
 
+Figurerna och projektilerna består av riktiga 3D-meshar, inte förrenderade sprites. En separat SubViewport visar världen bakom det vanliga 2D-gränssnittet. Kameran är fast, upphöjd och lätt vriden; projektionen kompenseras så att fötter, skott och sikte ligger på samma koordinater som kollisionsmasken. Ingen fri förflyttning på djupet har lagts till. Den breda markytan, klippfasetterna och de djupa kratrarna är riktiga meshytor. Grafiklagret ändrar inte kollisionsmasken. Det nya protokollet 3 hanterar de större rummen; servern fortsätter samtidigt stödja gamla protokoll 1 och 2.
+
+Compatibility-renderaren använder enkla material, sammanslagna miljömeshar och begränsade effekter utan dyra eftereffekter eller dynamiska skuggor. Mobil får lägre intern 3D-upplösning med samma exakta bildformat. UI:t skalar självt; dubbel canvasskalning är avstängd så att menyns knappar behåller sin avsedda storlek. Figurerna har fjädrande squash/stretch, hoppförberedelse, landningsstuds, rekyl och träffreaktioner utan fördröjning av fysiken. Headless-speltester hoppar över renderingen; den särskilda 3D-testsviten kontrollerar meshmasker, kraterkanter, kamerans verkliga projektion, nätverkstillstånd och skärmrotation.
+
 Det här är ett eget, Worms-inspirerat spel med egna figurer och egen grafik. Inga Worms-filer, figurer, logotyper eller ljud ingår. Ingen koppling till Team17.
 
 Godot är fri programvara under MIT-licensen: https://godotengine.org/license/ . DejaVu Sans ingår med sin licens i `assets/FONT-LICENSE.txt`.
 
 ## Avgränsning
 
-Spelet har lokal tvåspelarduell och kodbaserad onlineduell på fem banor. Jesus är en spelbar figur, inte en AI-motståndare. Online kräver en separat publicerad relayserver: GitHub Pages kan bara servera själva spelet. Se [onlineguiden](online-server/README.md). Utan serveradress fungerar lokal duell och onlinelobbyn förklarar vad som saknas.
+Spelet har lokal tvåspelarduell och privata onlinematcher för 2–6 spelare på fem banor. Jesus är en spelbar figur, inte en AI-motståndare. Online kräver en separat publicerad relayserver: GitHub Pages kan bara servera själva spelet. Se [onlineguiden](online-server/README.md). Utan serveradress fungerar lokal duell och onlinelobbyn förklarar vad som saknas.
 
-Inga spelarkonton, chatt, publika rum, topplistor eller beständiga matchresultat ingår. Daniel är matchvärd; detta är ett vänskapsspel, inte ett fusksäkert tävlingssystem. Host-migrering och återställning efter stängd/laddad-om flik ingår inte.
+Inga spelarkonton, chatt, publika rum, topplistor eller beständiga matchresultat ingår. Den som skapar rummet är matchvärd; detta är ett vänskapsspel, inte ett fusksäkert tävlingssystem. Host-migrering och återställning efter stängd/laddad-om flik ingår inte.

@@ -52,7 +52,7 @@ jobs:
           key: ${{ runner.os }}-godot-4.6.3-${{ hashFiles('scripts/install-godot.sh', 'tooling/template-provenance.json') }}
       - name: Import, test, and export with pinned Godot
         run: bash scripts/build-web.sh
-      - name: Test two real Godot clients against the multiplayer server
+      - name: Test two- and six-player Godot matches against the multiplayer server
         timeout-minutes: 3
         env:
           WRANGLER_SEND_METRICS: 'false'

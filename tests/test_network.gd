@@ -30,6 +30,9 @@ func connected(game, seat: int) -> void:
 	game.net.status = "connected"
 	game.net.host_connected = true
 	game.net.guest_connected = true
+	game.net.started = true
+	game.net.capacity = 2
+	game.net.roster = [{"seat": 0, "name": "Daniel", "connected": true, "alive": true}, {"seat": 1, "name": "Jesus", "connected": true, "alive": true}]
 
 func transfer() -> bool:
 	# A JSON round trip exercises wire numbers rather than sharing objects.
@@ -137,6 +140,7 @@ func run() -> void:
 	malformed.turn_clock = NAN
 	check(not guest.apply_network_snapshot(malformed), "Non-finite snapshot number rejected")
 	host.net.guest_connected = false
+	host.net.roster[1].connected = false
 	before = host.turn_clock
 	var pos_before: Vector2 = host.fighters[host.active].pos
 	step(2)
@@ -145,6 +149,7 @@ func run() -> void:
 	check(host.lobby.visible and host._remote_held.is_empty(), "Disconnected match shows recovery lobby and clears held input")
 	host._online_started = true
 	host.net.guest_connected = true
+	host.net.roster[1].connected = true
 	host._network_changed()
 	check(not host.lobby.visible, "Reconnected peer resumes existing match")
 	guest._last_received_seq = 10
@@ -164,8 +169,8 @@ func run() -> void:
 		host._layout(viewport)
 		await process_frame
 		await process_frame
-		var box_end: Vector2 = (host.lobby.box.position + host.lobby.box.size) * host.ui_scale + host.ui_origin
-		var wanted_width := 1120.0 if host.portrait else 676.0
+		var box_end: Vector2 = host.lobby.box.get_global_rect().end
+		var wanted_width: float = minf(620, viewport.x - 20)
 		check(host.lobby.box.size.x <= wanted_width + 1, "Lobby shrinks to current orientation width at %dx%d" % [viewport.x, viewport.y])
 		check(box_end.x <= viewport.x + 1 and box_end.y <= viewport.y + 1, "Entire lobby stays on screen after rotation to %dx%d" % [viewport.x, viewport.y])
 		var back_end: Vector2 = host.lobby.back_button.get_global_rect().end
