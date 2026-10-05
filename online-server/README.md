@@ -31,7 +31,7 @@ Den lokala servern finns på `ws://127.0.0.1:8787`. Den använder samma Worker-k
 
 I projektets `network_config.json`, sätt `server_url` till den lokala adressen när du testar i Godot. Använd alltid `wss://` för det publicerade HTTPS-spelet. Spara aldrig en lokal serveradress i en publicerad version.
 
-Testerna använder riktiga WebSocket-anslutningar. De täcker rumsskapande, anslutning, avskilda rum, två spelarplatser, turkontroll, terrängdata, båda spelarnas återanslutning, samtidiga anslutningar, återställning från SQLite efter full omstart, pausad värd, rollförfalskning, fel token, för stora/felformade meddelanden, fel Origin och meddelandebegränsning.
+Testerna använder riktiga WebSocket-anslutningar. De täcker rumsskapande, anslutning, avskilda rum, två spelarplatser, turkontroll, terrängdata, båda spelarnas återanslutning, samtidiga anslutningar, återställning från SQLite efter full omstart, pausad värd, rollförfalskning, fel token, för stora/felformade meddelanden, fel Origin och meddelandebegränsning. Protokolltesterna täcker även v1-kompatibilitet, uppgradering av äldre sparade rum, avvisade blandversioner utan förlorad spelarplats, samt fullständiga v2-kartor, ammunition och splitter vid återanslutning och omstart.
 
 ## Publicera med Cloudflares GitHub-anslutning
 
@@ -49,7 +49,7 @@ Gör detta först när mappen finns i GitHub-repots `main`-gren.
    - Inga egna hemligheter eller API-nycklar behövs i koden.
 5. Cloudflare skapar en beständig byggtoken som gör att senare ändringar i den valda grenen kan publiceras automatiskt. Granska och godkänn detta själv i Cloudflare. Klistra inte in några token eller lösenord i chatt.
 6. Starta bygget. `wrangler.jsonc` skapar SQLite-versionen av `GameRoom`, som stöds på Free. Första publiceringen visar en `https://kraterkompisar-online.<ditt-namn>.workers.dev`-adress.
-7. Kontrollera `<adressen>/health`. Svaret ska innehålla `ok: true` och `protocol: 1`.
+7. Kontrollera `<adressen>/health`. Svaret ska innehålla `ok: true`, `protocol: 2` och `supported_protocols: [1, 2]`.
 8. Sätt `server_url` i spelets `network_config.json` till samma adress med `wss://` i början, utan `/room`. Publicera sedan Godot-webbexporten via befintlig GitHub Pages CI.
 9. Kontrollera två separata webbläsare/enheter: skapa rum, anslut med kod, skjut från båda, kontrollera samma krater/hälsa/tur, bryt anslutningen och återanslut.
 
@@ -60,17 +60,19 @@ Worker-namnet i dashboarden måste matcha `name` i `wrangler.jsonc`. Aktivera in
 
 Alternativ för en utvecklare som redan har godkänd lokal inloggning: `npm run deploy`. Ingen inloggning eller behörighet skapas av projektets tester.
 
-## Protokoll v1
+## Protokoll v1 och v2
 
 Godot använder `WebSocketPeer` och JSON-textpaket. Servern är inte Godots RPC-protokoll.
 
 Anslutningar, där BASE är den verifierade `wss://`-serveradressen:
 
-- Skapa: `BASE/room?mode=create`
-- Anslut: `BASE/room?code=ABCDEFGH`
-- Återanslut: `BASE/room?code=ABCDEFGH&token=<din token>`
+- Skapa: `BASE/room?mode=create&protocol=2`
+- Anslut: `BASE/room?code=ABCDEFGH&protocol=2`
+- Återanslut: `BASE/room?code=ABCDEFGH&token=<din token>&protocol=2`
 
-Servern skickar `welcome` med `protocol:1`, `room`, `seat` (0 värd/Daniel, 1 gäst/Jesus), `host`, en slumpad `token`, `peer_connected`, `host_connected`, `guest_connected`, `seq`, `input_seq`, `snapshot` (eller null) och `expires_at` (Unix-millisekunder). Token sparas bara internt i klienten, aldrig i delningslänken. Servern lagrar endast token-hashar. En återanslutning ersätter en äldre anslutning till just den verifierade spelarplatsen.
+Protokollet bestäms när rummet skapas och sparas med rummet. Utelämnad `protocol` betyder v1; äldre klienter och äldre lagrade rum utan protokollfält fortsätter därför fungera som v1. `protocol=1` är också giltigt. Okända, felaktiga eller upprepade protokollvärden och försök att ansluta med en annan version än rummets ger WebSocket-felet `version_mismatch`. Kontrollen sker innan en plats tilldelas eller en befintlig anslutning ersätts. Båda spelarna måste använda samma protokoll.
+
+Servern skickar `welcome` med rummets `protocol` (1 eller 2), `room`, `seat` (0 värd/Daniel, 1 gäst/Jesus), `host`, en slumpad `token`, `peer_connected`, `host_connected`, `guest_connected`, `seq`, `input_seq`, `snapshot` (eller null) och `expires_at` (Unix-millisekunder). Token sparas bara internt i klienten, aldrig i delningslänken. Servern lagrar endast token-hashar. En återanslutning ersätter en äldre anslutning till just den verifierade spelarplatsen.
 
 `presence` skickas när anslutningar ändras och innehåller `host_connected`/`guest_connected`. Klienterna pausar om någon saknas. En plats blir inte ledig för en främmande spelare när anslutningen bryts.
 
@@ -80,7 +82,17 @@ Värden skickar:
 {"type":"state","seq":1,"commit":true,"snapshot":{}}
 ```
 
-`seq` måste öka. `snapshot` är hela matchläget, enligt Godot-klientens schema 1: fas/tur/aktiv spelare, vinkel/kraft/vapen/vind/klockor, två figurer, projektil, spår och hela ordnade kraterlistan. Servern vidarebefordrar bara värdens läge till gästen. Initialläget sparas alltid, normalt sparas högst en gång per sekund och viktiga `commit`-händelser högst fyra gånger per sekund. Vid normal frånkoppling sparas senaste läget. Ändringar i värdens `paused`-flagga sparas alltid direkt. Ett abrupt serveravbrott kan därför rulla tillbaka upp till ungefär en sekund.
+`seq` måste öka. `snapshot` är hela matchläget: fas/tur/aktiv spelare, vinkel/kraft/vapen/vind/klockor, två figurer, projektil, spår och hela ordnade kraterlistan. `schema` måste motsvara rummets protokoll. Schema 1 behåller sina tidigare fält och vapengränser (0–1), utan krav på de nya v2-fälten.
+
+Schema 2 har samma basfält samt:
+
+- `map_id`: heltal 0–4.
+- `freedom`: exakt två heltal 0–1, ett ammunitionsantal per spelare.
+- `weapon`: heltal 0–3; splittertypen 4 får inte väljas som vapen.
+- `projectile`: tomt objekt eller ett fullständigt projektilobjekt med `pos`/`vel` (två ändliga tal vardera, inom ±10000), `age` (0–10), `weapon` (heltal 0–3), `bounces` (heltal 0–4), `owner` och `target` (heltal 0–1). Målet måste vara motspelaren: `target == 1 - owner`.
+- `fragments`: en lista med högst fem fullständiga projektilobjekt. Varje splitter har samma fält och gränser, men `weapon` måste vara 4. Tomma eller icke-objekt godtas inte som splitter.
+
+Hela läget, inklusive karta, kvarvarande ammunition, projektil och samtliga splitter, vidarebefordras och sparas. Servern vidarebefordrar bara värdens läge till gästen. Initialläget sparas alltid, normalt sparas högst en gång per sekund och viktiga `commit`-händelser högst fyra gånger per sekund. Vid normal frånkoppling sparas senaste läget. Ändringar i värdens `paused`-flagga sparas alltid direkt. Ett abrupt serveravbrott kan därför rulla tillbaka upp till ungefär en sekund.
 
 Gästen skickar ett platt paket:
 
@@ -90,7 +102,7 @@ Gästen skickar ett platt paket:
 
 Axlar är -1, 0 eller 1. Valfria fält: `aim:[face,angle]`, där face är -1/1 och angle är 5–85, samt `action` (`jump`, `fire` eller `weapon`). Servern tillåter detta endast från plats 1 under gästens aktuella sikttur och när värdens `paused`-flagga inte är satt. Vidarebefordrat paket innehåller även `seat:1`. Klienten fortsätter `seq` och `input_seq` efter återanslutning. Värden måste dessutom låta fjärrstyrda hållna knappar förfalla efter kort avbrott.
 
-`{"type":"ping"}` besvaras med `{"type":"pong"}`. Rå text `ping`/`pong` stöds även som ett vilolägesvänligt heartbeat. Fel skickas som `{"type":"error","code":"...","message":"..."}`. Exempel: `room_not_found`, `room_full`, `invalid_token`, `room_expired`, `bad_message`, `forbidden`, `rate_limited`, `server_unavailable`.
+`{"type":"ping"}` besvaras med `{"type":"pong"}`. Rå text `ping`/`pong` stöds även som ett vilolägesvänligt heartbeat. Fel skickas som `{"type":"error","code":"...","message":"..."}`. Exempel: `version_mismatch`, `room_not_found`, `room_full`, `invalid_token`, `room_expired`, `bad_message`, `forbidden`, `rate_limited`, `server_unavailable`.
 
 ## Integritet och skydd
 

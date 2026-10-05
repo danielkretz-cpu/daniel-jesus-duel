@@ -2,7 +2,8 @@
 // No accounts, analytics, chat, public room listing, or third-party calls.
 import { DurableObject } from 'cloudflare:workers';
 
-const PROTOCOL = 1;
+const PROTOCOL = 2;
+const SUPPORTED_PROTOCOLS = [1, 2];
 const MAX_MESSAGE = 65_536;
 const ROOM_TTL = 2 * 60 * 60 * 1000;
 const ROOM_CODE = /^[A-HJ-NP-Z2-9]{8}$/;
@@ -51,12 +52,30 @@ function createAllowed(request) {
 function integer(value, min, max) { return Number.isSafeInteger(value) && value >= min && value <= max; }
 function number(value, min, max) { return typeof value === 'number' && Number.isFinite(value) && value >= min && value <= max; }
 function vector(value, limit = 10000) { return Array.isArray(value) && value.length === 2 && value.every(n => number(n, -limit, limit)); }
-function validSnapshot(s) {
-  if (!s || typeof s !== 'object' || Array.isArray(s) || s.schema !== 1) return false;
+function record(value) { return value !== null && typeof value === 'object' && !Array.isArray(value); }
+function requestedProtocol(url) {
+  const values = url.searchParams.getAll('protocol');
+  // Only a missing parameter implies legacy v1. Reject ambiguous/unknown values.
+  if (!values.length) return 1;
+  return values.length === 1 && ['1', '2'].includes(values[0]) ? Number(values[0]) : null;
+}
+function versionMismatch() {
+  return socketError('version_mismatch', 'Spelversionerna passar inte ihop. Uppdatera spelet och skapa ett nytt rum.');
+}
+function validV2Projectile(p, fragment = false) {
+  if (!record(p)) return false;
+  if (!fragment && !Object.keys(p).length) return true;
+  return vector(p.pos) && vector(p.vel) && number(p.age, 0, 10)
+    && integer(p.weapon, fragment ? 4 : 0, fragment ? 4 : 3)
+    && integer(p.bounces, 0, 4) && integer(p.owner, 0, 1) && integer(p.target, 0, 1)
+    && p.target === 1 - p.owner;
+}
+function validSnapshot(s, protocol) {
+  if (!record(s) || s.schema !== protocol) return false;
   if (!['title', 'aim', 'flying', 'settle', 'over'].includes(s.phase)) return false;
   if (s.paused !== undefined && typeof s.paused !== 'boolean') return false;
   if (!integer(s.turn, 1, 10000) || !integer(s.active, 0, 1) || !integer(s.winner, -1, 1)) return false;
-  if (!number(s.angle, 5, 85) || !number(s.power, 12, 100) || !integer(s.weapon, 0, 1)) return false;
+  if (!number(s.angle, 5, 85) || !number(s.power, 12, 100) || !integer(s.weapon, 0, protocol === 2 ? 3 : 1)) return false;
   if (!number(s.wind, -100, 100) || !number(s.move_left, 0, 170.01) || !number(s.turn_clock, -10, 40.1) || !number(s.settle_clock, -20, 10)) return false;
   if (!integer(s.shots, 0, 10000) || !integer(s.hits, 0, 20000)) return false;
   if (!Array.isArray(s.fighters) || s.fighters.length !== 2) return false;
@@ -68,6 +87,13 @@ function validSnapshot(s) {
     if (!Array.isArray(c) || c.length !== 3 || !number(c[0], -200, 1500) || !number(c[1], -1500, 1000) || !number(c[2], 1, 100)) return false;
   }
   if (!Array.isArray(s.trail) || s.trail.length > 32 || !s.trail.every(v => vector(v))) return false;
+  if (protocol === 2) {
+    if (!integer(s.map_id, 0, 4)) return false;
+    if (!Array.isArray(s.freedom) || s.freedom.length !== 2 || !s.freedom.every(n => integer(n, 0, 1))) return false;
+    if (!Array.isArray(s.fragments) || s.fragments.length > 5 || !s.fragments.every(p => validV2Projectile(p, true))) return false;
+    return validV2Projectile(s.projectile);
+  }
+  // Legacy schema 1 keeps its existing projectile validation and weapon bounds.
   if (!s.projectile || typeof s.projectile !== 'object' || Array.isArray(s.projectile)) return false;
   if (Object.keys(s.projectile).length) {
     const p = s.projectile;
@@ -87,11 +113,13 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     if (url.pathname === '/health') {
-      return Response.json({ ok: true, game: 'Kraterkompisar', protocol: PROTOCOL }, { headers: { 'Cache-Control': 'no-store' } });
+      return Response.json({ ok: true, game: 'Kraterkompisar', protocol: PROTOCOL, supported_protocols: SUPPORTED_PROTOCOLS }, { headers: { 'Cache-Control': 'no-store' } });
     }
     if (url.pathname !== '/room') return new Response('Not found', { status: 404 });
     if (request.method !== 'GET' || request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') return new Response('WebSocket required', { status: 426 });
     if (!allowedOrigin(request, env)) return new Response('Origin not allowed', { status: 403 });
+    const protocol = requestedProtocol(url);
+    if (protocol === null) return versionMismatch();
     const creating = url.searchParams.get('mode') === 'create';
     if (creating && !createAllowed(request)) return socketError('rate_limited', 'Vänta en minut innan du skapar fler rum.');
     const code = creating ? randomCode() : (url.searchParams.get('code') || '').toUpperCase();
@@ -99,6 +127,7 @@ export default {
     // Never trust a client-supplied internal header. DO receives a clean routing URL.
     const internal = new URL('https://room/room');
     internal.searchParams.set('code', code);
+    internal.searchParams.set('protocol', String(protocol));
     if (creating) internal.searchParams.set('mode', 'create');
     if (url.searchParams.has('token')) internal.searchParams.set('token', url.searchParams.get('token'));
     try {
@@ -129,18 +158,23 @@ export class GameRoom extends DurableObject {
 
   async connect(request) {
     const url = new URL(request.url);
+    const protocol = requestedProtocol(url);
+    if (protocol === null) return versionMismatch();
     const creating = url.searchParams.get('mode') === 'create';
     if (this.room && Date.now() >= this.room.expires_at) {
       await this.expire();
       return socketError('room_expired', 'Rummet har stängts. Skapa ett nytt.');
     }
+    // Old persisted rooms have no protocol field and remain strictly v1.
+    // Check before allocating a guest seat or replacing any authenticated socket.
+    if (this.room && protocol !== (this.room.protocol ?? 1)) return versionMismatch();
     let token = url.searchParams.get('token') || '';
     let seat;
     if (creating) {
       if (this.room) return socketError('room_exists', 'Prova att skapa ett nytt rum.');
       token = randomHex();
       this.room = {
-        code: url.searchParams.get('code'), expires_at: Date.now() + ROOM_TTL,
+        code: url.searchParams.get('code'), protocol, expires_at: Date.now() + ROOM_TTL,
         token_hashes: [await tokenHash(token), null], seq: 0, input_seq: 0, snapshot: null
       };
       seat = 0;
@@ -170,7 +204,7 @@ export class GameRoom extends DurableObject {
     server.serializeAttachment({ seat, n: 0, window: Date.now() });
     const presence = this.presence();
     server.send(JSON.stringify({
-      type: 'welcome', protocol: PROTOCOL, room: this.room.code, seat, host: seat === 0,
+      type: 'welcome', protocol: this.room.protocol ?? 1, room: this.room.code, seat, host: seat === 0,
       token, peer_connected: seat === 0 ? presence.guest_connected : presence.host_connected,
       ...presence, seq: this.room.seq, input_seq: this.room.input_seq, snapshot: this.room.snapshot,
       expires_at: this.room.expires_at
@@ -213,7 +247,7 @@ export class GameRoom extends DurableObject {
     if (m.type === 'ping') { ws.send(JSON.stringify({ type: 'pong' })); return; }
     if (m.type === 'state') {
       if (auth.seat !== 0) return this.reject(ws, 'forbidden', 'Bara värden kan ändra matchen.');
-      if (!integer(m.seq, 1, Number.MAX_SAFE_INTEGER) || !validSnapshot(m.snapshot)) return this.reject(ws, 'bad_message', 'Ogiltigt matchläge.');
+      if (!integer(m.seq, 1, Number.MAX_SAFE_INTEGER) || !validSnapshot(m.snapshot, this.room.protocol ?? 1)) return this.reject(ws, 'bad_message', 'Ogiltigt matchläge.');
       if (m.seq <= this.room.seq) return; // Duplicate/stale packets are idempotent.
       const firstSnapshot = this.room.snapshot === null;
       const pauseChanged = this.room.snapshot?.paused !== m.snapshot.paused;
