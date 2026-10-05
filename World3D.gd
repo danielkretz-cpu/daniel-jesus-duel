@@ -26,6 +26,14 @@ var last_terrain: Image
 var last_craters := -1
 var last_shots := 0
 var render_size := Vector2i(1280, 470)
+# Only presentation resolution changes: simulation, collision and input stay exact.
+var quality_step := 8 if OS.has_feature("web") else 10
+var adaptive_quality := DisplayServer.get_name() != "headless"
+var frame_time_average := 1.0 / 60.0
+var _quality_clock := 0.0
+var _fast_clock := 0.0
+var quality_changes := 0
+var _slow_frame_streak := 0
 
 static func world_point(p: Vector2, depth: float = 0.0) -> Vector3:
 	# With this camera, projecting any point returns exactly the simulation's XY.
@@ -152,11 +160,37 @@ func get_texture() -> ViewportTexture:
 
 func resize_for_scale(scale_factor: float) -> void:
 	# Keep the exact 128:47 aspect; lower fill cost on phones without camera drift.
-	var multiplier := clampi(int(ceil(scale_factor * 10.0)), 5, 10)
+	var multiplier := mini(clampi(int(ceil(scale_factor * 10.0)), 5, 10), quality_step)
 	var desired := Vector2i(128 * multiplier, 47 * multiplier)
 	if desired != render_size:
 		render_size = desired
 		viewport.size = render_size
+
+func sample_frame_time(delta: float) -> void:
+	# Ignore a single suspension gap, but do not mistake sustained <4 FPS for
+	# suspension: consecutive very slow frames must still reduce render cost.
+	if not adaptive_quality or delta <= 0.0:
+		return
+	if delta > 0.25:
+		_slow_frame_streak += 1
+		if _slow_frame_streak == 1:
+			return
+		delta = 0.25
+	else:
+		_slow_frame_streak = 0
+	frame_time_average = lerpf(frame_time_average, delta, 1.0 - exp(-delta * 2.0))
+	_quality_clock += delta
+	_fast_clock = _fast_clock + delta if frame_time_average < 0.019 else 0.0
+	if _quality_clock >= 1.5 and frame_time_average > 0.025 and quality_step > 5:
+		quality_step -= 1
+		quality_changes += 1
+		_quality_clock = 0.0
+		_fast_clock = 0.0
+	elif _fast_clock >= 8.0 and quality_step < 10:
+		quality_step += 1
+		quality_changes += 1
+		_quality_clock = 0.0
+		_fast_clock = 0.0
 
 func terrain_changed(image: Image, texture: ImageTexture) -> void:
 	last_terrain = image
@@ -187,18 +221,28 @@ func sync(game, delta: float) -> void:
 		water_material.albedo_color = game.MapThemes.water_color(last_map)
 		for wave in waves:
 			wave.material_override.albedo_color = game.MapThemes.wave_color(last_map)
+	game._flush_terrain_texture()
 	terrain_view.flush()
+	if game._host_focused:
+		sample_frame_time(delta)
+	else:
+		_slow_frame_streak = 0
 	scenery.animate(game.elapsed, delta)
 	resize_for_scale(game.ui_scale)
 	for i in range(game.fighters.size()):
 		var fighter: Dictionary = game.fighters[i]
 		var actor = actors[i]
 		actor.visible = fighter.hp > 0 and fighter.pos.y < game.WATER + 8
-		actor.position = world_point(fighter.pos, 40)
+		actor.position = world_point(game._view_position(i), 40)
 		actor.scale = Vector3.ONE * (1.12 if game.portrait else 1.0)
 		var selected: bool = game.active == i and game.phase == "aim"
-		var aim: Vector2 = game._direction() if selected else Vector2(fighter.face, -0.25).normalized()
-		actor.update_pose(fighter, ProjectionMath.direction(aim), selected, game.elapsed, delta)
+		var aim: Vector2 = game._view_direction() if selected else Vector2(fighter.face, -0.25).normalized()
+		var visual_fighter: Dictionary = fighter
+		var visual_face: float = game.prediction.face_for(game, i)
+		if visual_face != float(fighter.face):
+			visual_fighter = fighter.duplicate()
+			visual_fighter.face = visual_face
+		actor.update_pose(visual_fighter, ProjectionMath.direction(aim), selected, game.elapsed, delta)
 	if game.shots > last_shots and game.active < actors.size():
 		actors[game.active].react_shot()
 	last_shots = game.shots

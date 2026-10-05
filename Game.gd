@@ -18,6 +18,7 @@ const MapThemes = preload("res://MapThemes.gd")
 const World3DScript = preload("res://World3D.gd")
 const StartMenuScript = preload("res://StartMenu.gd")
 const FriendInvite = preload("res://FriendInvite.gd")
+const ClientPredictionScript = preload("res://ClientPrediction.gd")
 const FighterScript = preload("res://Fighter3D.gd")
 const ROCKET := 0
 const BOMB := 1
@@ -29,6 +30,11 @@ const BANANA_FRAGMENTS := 5
 
 var terrain: Image
 var terrain_texture: ImageTexture
+var _terrain_texture_dirty := false
+var terrain_texture_uploads := 0
+const PARTICLE_CAP := 128
+const MAX_CRATERS := 500
+var _terrain_limit_notified := false
 var fighters: Array[Dictionary] = []
 var particles: Array[Dictionary] = []
 var floaters: Array[Dictionary] = []
@@ -95,6 +101,7 @@ var _host_focused := true
 var _host_paused := false
 var _state_age := 0.0
 var world3d
+var prediction = ClientPredictionScript.new()
 
 func _ready() -> void:
 	rng.randomize()
@@ -221,6 +228,8 @@ func _generate_terrain() -> void:
 		for y in range(surface, WH):
 			terrain.set_pixel(x, y, MapThemes.terrain_color(map_id, x, y, surface))
 	terrain_texture = ImageTexture.create_from_image(terrain)
+	_terrain_texture_dirty = false
+	_terrain_limit_notified = false
 	if world3d != null:
 		world3d.terrain_changed(terrain, terrain_texture)
 
@@ -320,6 +329,7 @@ func _map_action(direction: int) -> void:
 	trail.clear()
 
 func start_game() -> void:
+	prediction.reset()
 	if online and net != null and net.started:
 		map_id = net.map_id
 	_remote_input_sequences.clear()
@@ -394,6 +404,7 @@ func _jump() -> void:
 		if not _can_control():
 			return
 		if net.seat > 0:
+			prediction.reset()
 			_send_guest_input("jump")
 			return
 	if phase != "aim" or move_left < 20 or not fighters[active].ground:
@@ -693,18 +704,71 @@ func _blast(p: Vector2, radius: float, max_damage: int, knockback: bool) -> void
 	_emit(p, Color("f29c72"), 20 if max_damage > 20 else 8, 180)
 	_sound("boom")
 
-func carve(p: Vector2, radius: float) -> void:
-	craters.append([p.x, p.y, radius])
-	for y in range(maxi(0, int(p.y - radius - 3)), mini(WH, int(p.y + radius + 4))):
-		for x in range(maxi(0, int(p.x - radius - 3)), mini(WW, int(p.x + radius + 4))):
-			var distance := Vector2(x, y).distance_to(p)
-			if distance < radius:
-				terrain.set_pixel(x, y, Color.TRANSPARENT)
-			elif distance < radius + 3 and _solid(Vector2(x, y)):
-				terrain.set_pixel(x, y, Color("9c7180"))
-	terrain_texture.update(terrain)
+func carve(p: Vector2, radius: float, record_noop: bool = false) -> void:
+	# Protocol 3 has a bounded canonical history. Never send an unreceivable state.
+	# Damage still resolves after this limit; only further terrain cutting stops.
+	if craters.size() >= MAX_CRATERS:
+		_show_terrain_limit()
+		return
+	var rim := Color("9c7180")
+	var inner_squared := radius * radius
+	var outer_squared := (radius + 3) * (radius + 3)
+	var bounds := Rect2i(
+		Vector2i(maxi(0, int(p.x - radius - 3)), maxi(0, int(p.y - radius - 3))),
+		Vector2i.ZERO)
+	bounds.end = Vector2i(mini(WW, int(p.x + radius + 4)), mini(WH, int(p.y + radius + 4)))
+	var changed := false
+	if bounds.has_area():
+		var before := terrain.get_region(bounds).get_data()
+		for y in range(bounds.position.y, bounds.end.y):
+			var dy_squared := (float(y) - p.y) * (float(y) - p.y)
+			var left := bounds.position.x
+			var right := left
+			if dy_squared < inner_squared:
+				var half_width := sqrt(inner_squared - dy_squared)
+				left = clampi(int(floor(p.x - half_width)) + 1, bounds.position.x, bounds.end.x)
+				right = clampi(int(ceil(p.x + half_width)), bounds.position.x, bounds.end.x)
+				# Keep the original strict pixel-center radius test at rounded edges.
+				while left < right and Vector2(left, y).distance_squared_to(p) >= inner_squared:
+					left += 1
+				while right > left and Vector2(right - 1, y).distance_squared_to(p) >= inner_squared:
+					right -= 1
+				if right > left:
+					terrain.fill_rect(Rect2i(left, y, right - left, 1), Color.TRANSPARENT)
+			# Native fill handles the interior. Only the narrow scorched rim needs
+			# per-pixel reads so holes are never filled back in.
+			for span in [Vector2i(bounds.position.x, left), Vector2i(right, bounds.end.x)]:
+				for x in range(span.x, span.y):
+					var distance_squared := Vector2(x, y).distance_squared_to(p)
+					if distance_squared >= inner_squared and distance_squared < outer_squared and terrain.get_pixel(x, y).a > 0.5:
+						terrain.set_pixel(x, y, rim)
+		changed = before != terrain.get_region(bounds).get_data()
+	# Replaying a legacy host must retain every history entry, including no-ops.
+	if changed or record_noop:
+		craters.append([p.x, p.y, radius])
+	if craters.size() >= MAX_CRATERS:
+		_show_terrain_limit()
+	if not changed:
+		return
+	# Collision changes immediately; presentation uploads only once per rendered frame.
+	# Banana bursts and reconnect replay must not upload this 2.4 MB image per crater.
+	_terrain_texture_dirty = true
 	if world3d != null:
 		world3d.carve_changed(p, radius)
+
+func _show_terrain_limit() -> void:
+	if _terrain_limit_notified:
+		return
+	_terrain_limit_notified = true
+	toast = "Terränggränsen är nådd. Skott gör fortfarande skada."
+	toast_clock = 6.0
+
+func _flush_terrain_texture() -> void:
+	if not _terrain_texture_dirty:
+		return
+	terrain_texture.update(terrain)
+	_terrain_texture_dirty = false
+	terrain_texture_uploads += 1
 
 func _damage(i: int, amount: int) -> void:
 	if amount <= 0:
@@ -760,6 +824,7 @@ func _check_winner() -> bool:
 	return true
 
 func _process(delta: float) -> void:
+	prediction.update(self, delta)
 	_network_tick(delta)
 	if start_menu != null:
 		start_menu.visible = phase == "title" and not online
@@ -780,12 +845,13 @@ func _process(delta: float) -> void:
 		floaters[i].pos.y -= delta * 27
 		if floaters[i].life <= 0:
 			floaters.remove_at(i)
+	_flush_terrain_texture()
 	if world3d != null:
 		world3d.sync(self, delta)
 	queue_redraw()
 
 func _emit(p: Vector2, col: Color, count: int, speed: float) -> void:
-	for n in range(count):
+	for n in range(mini(count, maxi(0, PARTICLE_CAP - particles.size()))):
 		var life := rng.randf_range(0.35, 0.95)
 		particles.append({"pos": p, "vel": Vector2.from_angle(rng.randf_range(-PI, PI)) * rng.randf_range(speed * 0.2, speed), "life": life, "max": life, "color": col, "size": rng.randf_range(2, 6)})
 
@@ -836,6 +902,7 @@ func _input(event: InputEvent) -> void:
 
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_APPLICATION_FOCUS_OUT:
+		prediction.reset()
 		pointers.clear()
 		held.clear()
 		_remote_held.clear()
@@ -909,7 +976,7 @@ func _refresh_held() -> void:
 func _aim_at(p: Vector2) -> void:
 	if not _can_control():
 		return
-	var delta: Vector2 = p - Vector2(0, world_top) - fighters[active].pos + Vector2(0, 25)
+	var delta: Vector2 = p - Vector2(0, world_top) - _view_position(active) + Vector2(0, 25)
 	if delta.length() < 15:
 		return
 	if absf(delta.x) > 0.01:
@@ -935,6 +1002,7 @@ func _restart_action() -> void:
 		start_game()
 
 func _clear_local_controls(send_neutral: bool = false) -> void:
+	prediction.reset()
 	pointers.clear()
 	held.clear()
 	_pending_aim.clear()
@@ -1093,7 +1161,7 @@ func _draw_world() -> void:
 			draw_circle(trail[n], 2.8 * float(n + 1) / maxf(1, trail.size()), Color(1, 0.95, 0.82, 0.45 * float(n + 1) / maxf(1, trail.size())))
 	for i in range(fighters.size()):
 		if fighters[i].hp > 0:
-			_draw_character(i, fighters[i].pos, 1.25 if portrait else 1.0, fighters[i].face, true)
+			_draw_character(i, _view_position(i), 1.25 if portrait else 1.0, prediction.face_for(self, i), true)
 		elif fighters[i].pos.y < WATER:
 			var p: Vector2 = fighters[i].pos
 			draw_line(p + Vector2(-8, 0), p + Vector2(8, -20), CREAM, 4, true)
@@ -1132,7 +1200,7 @@ func _draw_3d_world() -> void:
 	for i in range(fighters.size()):
 		if fighters[i].hp <= 0:
 			continue
-		var p: Vector2 = fighters[i].pos
+		var p: Vector2 = _view_position(i)
 		var col: Color = _fighter_color(i)
 		var name_label := str(fighters[i].name).left(12)
 		var label_width := clampf(BOLD.get_string_size(name_label, HORIZONTAL_ALIGNMENT_LEFT, -1, 13).x + 18.0, 96, 186)
@@ -1218,7 +1286,7 @@ func _draw_character(i: int, p: Vector2, s: float, face: float, label: bool) -> 
 		draw_arc(center + Vector2(0, 0) * s, 7 * s, 0.1, PI - 0.1, 16, INK, 2 * s, true)
 		draw_circle(center + Vector2(-18, -1) * s, 3 * s, Color("d994ae"))
 		draw_circle(center + Vector2(18, -1) * s, 3 * s, Color("d994ae"))
-	var aim_dir := _direction() if i == active and phase == "aim" and label else Vector2(face, -0.3).normalized()
+	var aim_dir := _view_direction() if i == active and phase == "aim" and label else Vector2(face, -0.3).normalized()
 	var gun_start := center + Vector2(face * 13, 1) * s
 	var gun_end := gun_start + aim_dir * 26 * s
 	draw_line(gun_start + Vector2(0, 4) * s, gun_end + Vector2(0, 4) * s, Color("39374a"), 12 * s, true)
@@ -1240,10 +1308,17 @@ func draw_ellipse_shadow(p: Vector2, radii: Vector2) -> void:
 		points.append(p + Vector2(cos(n * TAU / 24), sin(n * TAU / 24)) * radii)
 	draw_colored_polygon(points, Color(0.1, 0.1, 0.15, 0.22))
 
+func _view_position(index: int) -> Vector2:
+	return prediction.position_for(self, index)
+
+func _view_direction() -> Vector2:
+	var view_angle: float = prediction.angle_for(self)
+	return Vector2(cos(deg_to_rad(view_angle)) * prediction.face_for(self, active), -sin(deg_to_rad(view_angle)))
+
 func _draw_aim() -> void:
-	var d := _direction()
-	var start: Vector2 = fighters[active].pos + Vector2(0, -27) + d * 30
-	var velocity := d * (250 + power * 5.2)
+	var d := _view_direction()
+	var start: Vector2 = _view_position(active) + Vector2(0, -27) + d * 30
+	var velocity := d * (250 + prediction.power_for(self) * 5.2)
 	for n in range(1, 16):
 		var t := n * 0.045
 		var p := start + velocity * t + Vector2(wind, GRAVITY) * t * t * 0.5
@@ -1287,8 +1362,8 @@ func _draw_controls() -> void:
 		_text("DITT VAPEN", Vector2(638, panel_y + 68), 25, MUTED, true)
 		_text("VINKEL", Vector2(308, panel_y + 303 + extra), 28, MUTED, true, true)
 		_text("KRAFT", Vector2(940, panel_y + 303 + extra), 28, MUTED, true, true)
-		_text("%d°" % int(angle), Vector2(308, panel_y + 422 + extra), 55, CREAM, true, true)
-		_text("%d%%" % int(power), Vector2(940, panel_y + 422 + extra), 55, GOLD, true, true)
+		_text("%d°" % int(prediction.angle_for(self)), Vector2(308, panel_y + 422 + extra), 55, CREAM, true, true)
+		_text("%d%%" % int(prediction.power_for(self)), Vector2(940, panel_y + 422 + extra), 55, GOLD, true, true)
 		_button("left", "←", Color("303249"), CREAM, 58)
 		_button("right", "→", Color("303249"), CREAM, 58)
 		_button("jump", "HOPPA", Color("303249"), CREAM, 29)
@@ -1313,8 +1388,8 @@ func _draw_controls() -> void:
 			_button(k, "−")
 		for k in ["angle_up", "power_up"]:
 			_button(k, "+")
-		_text("%d°" % int(angle), Vector2(408, panel_y + 107), 32, CREAM, true, true)
-		_text("%d%%" % int(power), Vector2(650, panel_y + 107), 32, GOLD, true, true)
+		_text("%d°" % int(prediction.angle_for(self)), Vector2(408, panel_y + 107), 32, CREAM, true, true)
+		_text("%d%%" % int(prediction.power_for(self)), Vector2(650, panel_y + 107), 32, GOLD, true, true)
 		_button("weapon", _weapon_label(), Color("373249"), GOLD if weapon != FREEDOM or freedom[active] else MUTED, 14)
 		_button("fire", "SKJUT!  ↗", GOLD, INK, 25)
 		_text("A/D  flytta    J  hoppa    W/S  vinkel    Q/E  kraft    Tab  vapen    Mellanslag  skjut", Vector2(28, panel_y + 169), 13, MUTED)
@@ -1343,8 +1418,8 @@ func _draw_compact_controls(color: Color, live: bool) -> void:
 		_button(action, "−", Color("303249"), CREAM, 38)
 	for action in ["angle_up", "power_up"]:
 		_button(action, "+", Color("303249"), CREAM, 38)
-	_text("%d°" % int(angle), Vector2(544, panel_y + 139), 34, CREAM, true, true)
-	_text("%d%%" % int(power), Vector2(870, panel_y + 139), 34, GOLD, true, true)
+	_text("%d°" % int(prediction.angle_for(self)), Vector2(544, panel_y + 139), 34, CREAM, true, true)
+	_text("%d%%" % int(prediction.power_for(self)), Vector2(870, panel_y + 139), 34, GOLD, true, true)
 	_button("weapon", ["RAKET", "BOMB", "BANAN", "FREEDOM ×%d" % freedom[active]][weapon], Color("373249"), GOLD, 23)
 	_button("fire", "SKJUT!", GOLD, INK, 30)
 	_draw_target_button()
@@ -1469,6 +1544,7 @@ func _open_online() -> void:
 	lobby.refresh(net)
 
 func _leave_online() -> void:
+	prediction.reset()
 	online = false
 	net.leave()
 	_online_started = false
@@ -1542,7 +1618,12 @@ func _online_paused() -> bool:
 func _refresh_network_overlay() -> void:
 	if not online:
 		return
-	lobby.visible = lobby.is_confirming_leave() or not net.together() or not _online_started or _online_paused()
+	var show_overlay: bool = lobby.is_confirming_leave() or not net.together() or not _online_started or _online_paused()
+	# Hidden lobby controls need no font/layout refresh on every 10 Hz snapshot.
+	# Presence/status changes still refresh via _network_changed.
+	if not show_overlay and not lobby.visible:
+		return
+	lobby.visible = show_overlay
 	lobby.refresh(net)
 	if net.together() and _online_started and _online_paused():
 		held.clear()
@@ -1718,7 +1799,7 @@ func _valid_snapshot(data: Dictionary) -> bool:
 	for fragment in data.fragments:
 		if not _valid_bullet(fragment, true, count):
 			return false
-	if not data.get("craters") is Array or data.craters.size() > 500 or data.get("terrain_version") != data.craters.size():
+	if not data.get("craters") is Array or data.craters.size() > MAX_CRATERS or data.get("terrain_version") != data.craters.size():
 		return false
 	for crater in data.craters:
 		if not crater is Array or crater.size() != 3 or not _number_in(crater[0], -2000, 3000) or not _number_in(crater[1], -2000, 1500) or not _number_in(crater[2], 1, 100):
@@ -1763,7 +1844,7 @@ func apply_network_snapshot(data: Dictionary) -> bool:
 		craters.clear()
 	for i in range(craters.size(), data.craters.size()):
 		var crater: Array = data.craters[i]
-		carve(Vector2(float(crater[0]), float(crater[1])), float(crater[2]))
+		carve(Vector2(float(crater[0]), float(crater[1])), float(crater[2]), true)
 	var old_fighters := fighters.duplicate(true)
 	var old_freedom := freedom.duplicate()
 	fighters.clear()
@@ -1822,4 +1903,5 @@ func apply_network_snapshot(data: Dictionary) -> bool:
 		_sound("win")
 	if online and net != null:
 		net.accept_snapshot(data)
+	prediction.reconcile(self)
 	return true

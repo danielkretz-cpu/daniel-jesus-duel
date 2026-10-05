@@ -369,3 +369,20 @@ test('v3 expires and removes persisted names, seats and match state using the ro
   const old = connect(`/room?code=EXPRY222&protocol=3&token=${token}`);
   assert.equal((await old.next('error')).code, 'room_not_found');
 });
+
+test('v3 delayed delivery burst stays connected, relays latest state and retains rate protection', async () => {
+  const { host, peers } = await room(6);
+  await start(peers);
+  // 5 seconds of ordinary 10Hz states delivered together by a stalled uplink.
+  const value = snapshotV3(6, { craters: Array.from({ length: 500 }, (_, i) => [i * 2, 350, 35]), terrain_version: 500 });
+  for (let seq = 1; seq <= 50; seq++) host.send({ type: 'state', seq, snapshot: value });
+  await Promise.all(peers.slice(1).map(p => p.next('state', m => m.seq === 50)));
+  host.send({ type: 'ping' }); await host.next('pong');
+  assert.equal(host.ws.readyState, WebSocket.OPEN);
+  assert.equal(host.queue.some(m => m.type === 'error'), false);
+  // Abuse is still bounded rather than disabling the limiter to mask stalls.
+  for (let i = 0; i < 200; i++) host.send({ type: 'ping' });
+  const error = await host.next('error');
+  assert.equal(error.code, 'rate_limited'); assert.equal(error.fatal, true);
+  await closeAll(peers);
+});

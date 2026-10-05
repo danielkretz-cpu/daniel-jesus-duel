@@ -88,7 +88,7 @@ async function pair(protocol) {
 
 test('public health endpoint reports protocol, with no private state', async () => {
   const response = await fetch(base.replace('ws:', 'http:') + '/health');
-  assert.deepEqual(await response.json(), { ok: true, game: 'Kraterkompisar', protocol: 3, supported_protocols: [1, 2, 3] });
+  assert.deepEqual(await response.json(), { ok: true, game: 'Kraterkompisar', protocol: 3, supported_protocols: [1, 2, 3], transport_revision: 1 });
 });
 
 test('real sockets create/join, relay terrain state and only the correct guest turn', async () => {
@@ -163,7 +163,7 @@ test('malformed, oversized, spoofed-origin and excessive traffic are rejected', 
   const status = await new Promise(resolve => blocked.ws.once('unexpected-response', (_req, response) => { resolve(response.statusCode); response.destroy(); }));
   assert.equal(status, 403);
   const spam = connect('/room?mode=create'); await spam.next('welcome');
-  for (let i = 0; i < 45; i++) spam.send({ type: 'ping' });
+  for (let i = 0; i < 200; i++) spam.send({ type: 'ping' });
   assert.equal((await spam.next('error')).code, 'rate_limited');
 });
 

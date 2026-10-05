@@ -5,6 +5,9 @@ import { DurableObject } from 'cloudflare:workers';
 const PROTOCOL = 3;
 const SUPPORTED_PROTOCOLS = [1, 2, 3];
 const MAX_MESSAGE = 65_536;
+// Permit short network-delivery bursts without disconnecting a healthy match.
+const MESSAGE_RATE = 40;
+const MESSAGE_BURST = 80;
 const ROOM_TTL = 2 * 60 * 60 * 1000;
 const ROOM_CODE = /^[A-HJ-NP-Z2-9]{8}$/;
 const TOKEN = /^[a-f0-9]{64}$/;
@@ -142,7 +145,7 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     if (url.pathname === '/health') {
-      return Response.json({ ok: true, game: 'Kraterkompisar', protocol: PROTOCOL, supported_protocols: SUPPORTED_PROTOCOLS }, { headers: { 'Cache-Control': 'no-store' } });
+      return Response.json({ ok: true, game: 'Kraterkompisar', protocol: PROTOCOL, supported_protocols: SUPPORTED_PROTOCOLS, transport_revision: 1 }, { headers: { 'Cache-Control': 'no-store' } });
     }
     if (url.pathname !== '/room') return new Response('Not found', { status: 404 });
     if (request.method !== 'GET' || request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') return new Response('WebSocket required', { status: 426 });
@@ -243,7 +246,7 @@ export class GameRoom extends DurableObject {
     const pair = new WebSocketPair();
     const server = pair[1];
     this.ctx.acceptWebSocket(server, [String(seat)]);
-    server.serializeAttachment({ seat, n: 0, window: Date.now() });
+    server.serializeAttachment({ seat, tokens: MESSAGE_BURST, refill: Date.now(), window: Date.now(), lobby_n: 0 });
     const presence = this.presence();
     server.send(JSON.stringify({
       type: 'welcome', protocol: this.room.protocol ?? 1, room: this.room.code, seat, host: seat === 0,
@@ -290,8 +293,12 @@ export class GameRoom extends DurableObject {
     const auth = ws.deserializeAttachment();
     if (!auth || !integer(auth.seat, 0, this.room.protocol === 3 ? this.room.names.length - 1 : 1) || ws.readyState !== 1) return;
     const now = Date.now();
-    if (now - auth.window >= 1000) { auth.window = now; auth.n = 0; auth.lobby_n = 0; }
-    if (++auth.n > 40) return this.reject(ws, 'rate_limited', 'För många meddelanden.', true);
+    if (now - auth.window >= 1000) { auth.window = now; auth.lobby_n = 0; }
+    // Attachment defaults also support sockets opened before this deployment.
+    auth.tokens = Math.min(MESSAGE_BURST, (auth.tokens ?? MESSAGE_BURST) + Math.max(0, now - (auth.refill ?? now)) * MESSAGE_RATE / 1000);
+    auth.refill = now;
+    if (auth.tokens < 1) return this.reject(ws, 'rate_limited', 'För många meddelanden.', true);
+    auth.tokens -= 1;
     ws.serializeAttachment(auth);
     let m;
     try { m = JSON.parse(raw); } catch { return this.reject(ws, 'bad_message', 'Ogiltigt meddelande.', true); }
@@ -333,7 +340,12 @@ export class GameRoom extends DurableObject {
       if (firstSnapshot || pauseChanged || now - this.lastPersist >= 1000 || (m.commit === true && now - this.lastPersist >= 250)) await this.persist();
       const message = { type: 'state', seq: m.seq, commit: m.commit === true, snapshot: m.snapshot };
       if (this.room.protocol === 3) {
-        for (let seat = 1; seat < this.room.names.length; seat++) this.broadcast(message, seat);
+        // Serialize once for all guests; host already owns this exact state.
+        const encoded = JSON.stringify(message);
+        for (const peer of this.sockets()) {
+          if (peer.deserializeAttachment()?.seat === 0) continue;
+          try { peer.send(encoded); } catch { /* close callback updates presence */ }
+        }
       } else this.broadcast(message, 1);
       return;
     }

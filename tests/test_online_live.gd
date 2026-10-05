@@ -67,6 +67,14 @@ func run() -> void:
 	host._notification(Control.NOTIFICATION_APPLICATION_FOCUS_IN)
 	check(await wait_until(func(): return not host.lobby.visible and not guest.lobby.visible), "Host returning after blurred join dismisses both pause overlays")
 	check(not host.lobby.visible and not guest.lobby.visible, "Both lobbies close only after genuine connection and state")
+	# Model a guest render/main-thread stall while host and relay keep advancing.
+	var coalesced_before: int = guest.net.coalesced_states
+	guest.net.set_process(false)
+	await create_timer(2.0).timeout
+	guest.net._process(0.0)
+	guest.net.set_process(true)
+	check(guest.net.status == "connected" and guest.net.coalesced_states >= coalesced_before + 5, "Two-second guest receive stall coalesces queued states without disconnecting")
+	check(await wait_until(func(): return guest._last_received_seq >= host.net.state_seq - 1), "Stalled guest catches up to current authority instead of replaying stale frames")
 	host.wind = 0
 	host.fire()
 	check(await wait_until(func(): return guest.shots == 1 and guest.phase == "flying"), "Canonical host shot is visible on guest")

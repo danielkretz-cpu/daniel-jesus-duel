@@ -26,6 +26,11 @@ run_godot import --editor --import
 run_godot smoke --quit-after 10
 run_godot tests --script res://tests/test_game.gd
 run_godot network-tests --script res://tests/test_network.gd
+run_godot transport-tests --script res://tests/test_transport.gd
+run_godot prediction-tests --script res://tests/test_prediction.gd
+run_godot performance-tests --script res://tests/test_performance.gd
+run_godot prediction-integration-tests --script res://tests/prediction_review.gd
+run_godot performance-soak-tests --script res://tests/performance_review.gd -- --mesh
 run_godot expansion-tests --script res://tests/test_expansion.gd
 run_godot 3d-tests --script res://tests/test_3d.gd
 run_godot six-player-tests --script res://tests/test_multiplayer_six.gd

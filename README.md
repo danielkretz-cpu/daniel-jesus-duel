@@ -98,6 +98,14 @@ Det här är ett eget, Worms-inspirerat spel med egna figurer och egen grafik. I
 
 Godot är fri programvara under MIT-licensen: https://godotengine.org/license/ . DejaVu Sans ingår med sin licens i `assets/FONT-LICENSE.txt`.
 
+## Prestanda och nätverksrespons
+
+Terrängens textur laddas upp högst en gång per bildruta, även vid bananregn och återanslutning. Oförändrade explosioner bygger inte om terrängen. Grafikupplösningen anpassas automatiskt efter belastningen utan att ändra text, sikteskoordinater eller fysik. Köade nätverkstillstånd slås ihop till det senaste kompletta läget i stället för att spelas upp långt efteråt.
+
+Gästen får en kort lokal förhandsvisning av förflyttning på marken och tangentbordssikte/styrka, som sedan rättas mot värdens tillstånd. Hopp, skott, skada och terräng avgörs fortfarande av värden. Vid protokollets gräns på 500 kratrar visas ett meddelande och ytterligare terrängförstöring stoppas för den rundan; skotten fortsätter göra skada. En ny runda återställer terrängen.
+
+Mätningar, säkerhetsgränser och reproducerbara tester finns i [prestandaguiden](docs/PERFORMANCE.md). Headless-mätningarna är CPU-tester, inte påståenden om FPS i en viss webbläsare eller telefon.
+
 ## Avgränsning
 
 Spelet har lokal tvåspelarduell och privata onlinematcher för 2–6 spelare på fem banor. Jesus är en spelbar figur, inte en AI-motståndare. Online kräver en separat publicerad relayserver: GitHub Pages kan bara servera själva spelet. Se [onlineguiden](online-server/README.md). Utan serveradress fungerar lokal duell och onlinelobbyn förklarar vad som saknas.

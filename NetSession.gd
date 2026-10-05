@@ -8,6 +8,9 @@ signal match_started(data: Dictionary)
 const PROTOCOL := 3
 const MAX_PACKET := 65536
 const MAX_PLAYERS := 6
+# Full snapshots supersede older snapshots. Keep only a small transport backlog.
+const STATE_QUEUE_BUDGET := 16384
+const INBOUND_BUFFER := MAX_PACKET * 32
 const ROOM_ALPHABET := "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 var server_url := ""
 var socket: WebSocketPeer
@@ -33,6 +36,11 @@ var input_seq := 0
 var _request_path := ""
 var _wait_time := 0.0
 var _heartbeat := 0.0
+var _pending_state: Dictionary = {}
+var _incoming_state: Dictionary = {}
+var coalesced_states := 0
+var deferred_states := 0
+var skipped_inputs := 0
 
 func _ready() -> void:
 	if FileAccess.file_exists("res://network_config.json"):
@@ -142,7 +150,7 @@ func _connect(path: String) -> void:
 		return
 	_request_path = path
 	socket = WebSocketPeer.new()
-	socket.inbound_buffer_size = MAX_PACKET * 2
+	socket.inbound_buffer_size = INBOUND_BUFFER
 	socket.outbound_buffer_size = MAX_PACKET * 2
 	socket.max_queued_packets = 128
 	_wait_time = 0
@@ -171,10 +179,12 @@ func _process(delta: float) -> void:
 		if not data is Dictionary:
 			_fail("Servern skickade ett ogiltigt meddelande.")
 			return
-		_handle(data)
+		_queue_received(data)
+	_flush_received_state()
 	if socket == null:
 		return
 	if ready == WebSocketPeer.STATE_OPEN:
+		_flush_pending_state()
 		_heartbeat += delta
 		if _heartbeat > 15 and status == "connected":
 			_heartbeat = 0
@@ -192,6 +202,35 @@ func _process(delta: float) -> void:
 		_wait_time += delta
 		if _wait_time > 12:
 			_fail("Servern svarade inte. Kontrollera nätverket och försök igen.")
+
+# Coalesce only adjacent complete state messages. Input actions, welcome, errors
+# and presence are ordering barriers and are never dropped or reordered.
+func _queue_received(data: Dictionary) -> void:
+	if data.get("type") == "state" and _wire_integer(data.get("seq"), 1, 9007199254740991) and data.get("snapshot") is Dictionary:
+		if not _incoming_state.is_empty():
+			coalesced_states += 1
+		if _incoming_state.is_empty() or data.seq > _incoming_state.seq:
+			_incoming_state = data
+		return
+	_flush_received_state()
+	_handle(data)
+
+func _flush_received_state() -> void:
+	if _incoming_state.is_empty():
+		return
+	var latest := _incoming_state
+	_incoming_state = {}
+	_handle(latest)
+
+func _flush_pending_state() -> void:
+	if _pending_state.is_empty() or socket == null or socket.get_ready_state() != WebSocketPeer.STATE_OPEN:
+		return
+	if socket.get_current_outbound_buffered_amount() > STATE_QUEUE_BUDGET:
+		return
+	var latest := _pending_state
+	_pending_state = {}
+	if not send(latest) and socket != null:
+		_pending_state = latest
 
 static func _wire_integer(value: Variant, minimum: int, maximum: int) -> bool:
 	return (value is int or value is float) and is_finite(float(value)) and float(value) == floorf(float(value)) and value >= minimum and value <= maximum
@@ -290,6 +329,11 @@ func send(data: Dictionary) -> bool:
 func send_input(input: Dictionary, turn_number: int) -> bool:
 	if seat <= 0 or not together():
 		return false
+	# Periodic held controls supersede each other; never build a stale-input
+	# backlog on a stalled uplink. Explicit button actions retain their order.
+	if not input.has("action") and socket != null and socket.get_current_outbound_buffered_amount() > 4096:
+		skipped_inputs += 1
+		return false
 	input_seq += 1
 	var message := input.duplicate(true)
 	message.type = "input"
@@ -304,7 +348,14 @@ func send_state(snapshot: Dictionary, commit: bool) -> bool:
 	snapshot.seq = state_seq
 	_update_health(snapshot)
 	_refresh_status()
-	return send({"type": "state", "seq": state_seq, "commit": commit, "snapshot": snapshot})
+	# Retain the newest complete snapshot instead of appending seconds of stale
+	# history to TCP/browser bufferedAmount on a slow connection. Preserve commit.
+	var important := commit or bool(_pending_state.get("commit", false))
+	_pending_state = {"type": "state", "seq": state_seq, "commit": important, "snapshot": snapshot}
+	if socket != null and socket.get_current_outbound_buffered_amount() > STATE_QUEUE_BUDGET:
+		deferred_states += 1
+	_flush_pending_state()
+	return socket != null
 
 func _fail(message: String) -> void:
 	status = "disconnected" if not token.is_empty() else "error"
@@ -315,6 +366,8 @@ func _fail(message: String) -> void:
 	changed.emit()
 
 func _close_socket() -> void:
+	_pending_state = {}
+	_incoming_state = {}
 	if socket != null:
 		socket.close(1000, "Leaving room")
 		socket = null
