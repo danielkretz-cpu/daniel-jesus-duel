@@ -338,8 +338,13 @@ func test_six_live() -> void:
 		player._send_guest_input()
 		check((authority.fighters[seat].pos.x - x_before) * (1 if move_right else -1) > 0, "Guest seat %d moves its own fighter on the authoritative host" % seat)
 		player._pending_aim = [1.0, 85.0]
-		player.fire()
+		player._begin_charge(-2)
+		player._update_charge(0.25 + seat * 0.11)
+		var released_power: float = player._charge_power
+		player._release_charge(-2)
+		player._release_charge(-2)
 		check(await wait_until(func(): return authority.shots == shots_before + 1 and authority.phase == "flying"), "Guest seat %d launches one real canonical shot" % seat)
+		check(is_equal_approx(authority.power, released_power), "Guest seat %d chosen release power survives real relay and host authority" % seat)
 		check(authority.projectile.owner == seat and authority.projectile.target != seat, "Guest seat %d projectile carries its actual owner and selected opponent" % seat)
 		authority._send_state(true)
 		check(await wait_until(all_six_synced), "All six clients exactly agree on guest seat %d's launch" % seat)

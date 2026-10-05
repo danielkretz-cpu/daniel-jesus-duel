@@ -26,6 +26,7 @@ var last_terrain: Image
 var last_craters := -1
 var last_shots := 0
 var render_size := Vector2i(1280, 470)
+var render_bounds := Rect2(0, 0, WIDTH, HEIGHT)
 # Only presentation resolution changes: simulation, collision and input stay exact.
 var quality_step := 8 if OS.has_feature("web") else 10
 var adaptive_quality := DisplayServer.get_name() != "headless"
@@ -59,8 +60,8 @@ func initialize(game) -> void:
 	camera = Camera3D.new()
 	camera.name = "FixedSideViewCamera"
 	camera.projection = Camera3D.PROJECTION_ORTHOGONAL
-	camera.keep_aspect = Camera3D.KEEP_HEIGHT
-	camera.size = HEIGHT
+	camera.keep_aspect = Camera3D.KEEP_WIDTH
+	camera.size = WIDTH
 	camera.near = 1
 	camera.far = 3200
 	scene.add_child(camera)
@@ -113,12 +114,12 @@ func _make_water() -> void:
 	water_material.metallic = 0.12
 	water = MeshInstance3D.new()
 	var shape := QuadMesh.new()
-	shape.size = Vector2(WIDTH + 80, 58.0)
+	shape.size = Vector2(WIDTH + 80, 640.0)
 	water.mesh = shape
 	water.material_override = water_material
 	var right := world_point(Vector2.RIGHT) - world_point(Vector2.ZERO)
 	var up := world_point(Vector2.UP) - world_point(Vector2.ZERO)
-	water.transform = Transform3D(Basis(right, up, Vector3.BACK), world_point(Vector2(640, 471), 64))
+	water.transform = Transform3D(Basis(right, up, Vector3.BACK), world_point(Vector2(640, 762), 64))
 	water.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	scene.add_child(water)
 	# Thin solid highlights, not a full-screen transparent water effect.
@@ -158,13 +159,18 @@ func _make_effects() -> void:
 func get_texture() -> ViewportTexture:
 	return viewport.get_texture()
 
-func resize_for_scale(scale_factor: float) -> void:
-	# Keep the exact 128:47 aspect; lower fill cost on phones without camera drift.
-	var multiplier := mini(clampi(int(ceil(scale_factor * 10.0)), 5, 10), quality_step)
-	var desired := Vector2i(128 * multiplier, 47 * multiplier)
+func resize_for_scale(scale_factor: float, visible_height: float = HEIGHT, top: float = 0.0) -> void:
+	# Fix the arena width. Extra screen height reveals real sky/ballistics;
+	# matching the draw rectangle to the integer render target avoids drift.
+	var multiplier := mini(clampi(int(round(scale_factor * 10.0)), 3, 10), quality_step)
+	var desired := Vector2i(128 * multiplier, maxi(1, int(round(visible_height * multiplier / 10.0))))
 	if desired != render_size:
 		render_size = desired
 		viewport.size = render_size
+	render_bounds = Rect2(0, top, WIDTH, float(render_size.y) * WIDTH / render_size.x)
+	var focus := world_point(render_bounds.get_center())
+	camera.position = focus + ProjectionMath.camera_offset() * 1500.0
+	camera.look_at(focus)
 
 func sample_frame_time(delta: float) -> void:
 	# Ignore a single suspension gap, but do not mistake sustained <4 FPS for
@@ -228,7 +234,7 @@ func sync(game, delta: float) -> void:
 	else:
 		_slow_frame_streak = 0
 	scenery.animate(game.elapsed, delta)
-	resize_for_scale(game.ui_scale)
+	resize_for_scale(game.ui_scale, game.world_rect.size.y, -game.world_top)
 	for i in range(game.fighters.size()):
 		var fighter: Dictionary = game.fighters[i]
 		var actor = actors[i]

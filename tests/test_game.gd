@@ -115,7 +115,11 @@ func run() -> void:
 		touch.position = screen_center
 		touch.pressed = true
 		game._input(touch)
-		check(game.phase == "flying" and game.shots == 1, "Touch Fire button launches a shot at %dx%d" % [viewport_size.x, viewport_size.y])
+		check(game.phase == "aim" and game._charge_active and game.shots == 0, "Touch press starts charging without shooting")
+		game._update_charge(0.5)
+		touch.pressed = false
+		game._input(touch)
+		check(game.phase == "flying" and game.shots == 1, "Touch Fire release launches a shot at %dx%d" % [viewport_size.x, viewport_size.y])
 	game._layout()
 	print("RESULT: %d checks, %d failures" % [checks, failures])
 	game.queue_free()

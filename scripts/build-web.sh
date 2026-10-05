@@ -25,6 +25,9 @@ run_godot() {
 run_godot import --editor --import
 run_godot smoke --quit-after 10
 run_godot tests --script res://tests/test_game.gd
+run_godot charge-tests --script res://tests/test_charge.gd
+run_godot charge-review-tests --script res://tests/charge_review.gd
+run_godot compact-layout-tests --script res://tests/test_compact_layout.gd
 run_godot network-tests --script res://tests/test_network.gd
 run_godot transport-tests --script res://tests/test_transport.gd
 run_godot prediction-tests --script res://tests/test_prediction.gd

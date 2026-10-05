@@ -149,6 +149,10 @@ func run() -> void:
 		var screen: Vector2 = (point + Vector2(0, game.world_top)) * game.ui_scale + game.ui_origin
 		var restored: Vector2 = (screen - game.ui_origin) / game.ui_scale - Vector2(0, game.world_top)
 		check(restored.distance_to(point) < 0.001, "3D aim/touch coordinates stay stable at %dx%d" % [size.x, size.y])
+		var projected_pixel: Vector2 = view.camera.unproject_position(WorldScript.world_point(point, 18))
+		var projected_world: Vector2 = projected_pixel * view.render_bounds.size / Vector2(view.render_size) + view.render_bounds.position
+		check(game.world_to_ui(projected_world).distance_to(game.world_to_ui(point)) < 0.02, "Adaptive full-screen Camera3D stays aligned with overlay aim at %dx%d" % [size.x, size.y])
+		check(is_equal_approx(game.world_rect.size.y, game.layout_h) and game.ui_origin == Vector2.ZERO, "Arena fills full viewport beneath overlays at %dx%d" % [size.x, size.y])
 	for count in range(2, 7):
 		game.player_names.clear()
 		for i in range(count):
@@ -169,7 +173,7 @@ func run() -> void:
 		check(unique, "%d players retain distinct seat colors" % count)
 	game._layout(Vector2(852, 393))
 	var finger_sized := true
-	for action in ["left", "right", "jump", "angle_down", "angle_up", "power_down", "power_up", "weapon", "fire"]:
+	for action in ["left", "right", "jump", "angle_down", "angle_up", "weapon", "fire"]:
 		var physical: Vector2 = game.buttons[action].size * game.ui_scale
 		finger_sized = finger_sized and physical.x >= 44 and physical.y >= 44
 	check(finger_sized, "Every primary landscape touch button is at least 44 pixels")

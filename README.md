@@ -13,12 +13,12 @@ Vänlänkar innehåller bara den offentliga rumskoden. De innehåller aldrig spe
 Om en levande spelare eller värden tappar nätverket pausas matchen. En utslagen gäst kan lämna utan att stoppa de andra, men värdens enhet måste vara kvar även om värdens figur är utslagen. Använd **Återanslut** i samma öppna spelflik. Värden behöver hålla sin spelflik öppen och i förgrunden eftersom den enheten räknar ut matchen. Om fliken laddas om eller stängs försvinner dess tillfälliga återanslutningsnyckel; skapa då ett nytt rum. Rum stängs efter två timmar. Spelarlistan och banan låses när matchen startar.
 
 - **A / D eller ← / →:** flytta. Varje tur har en begränsad gångsträcka.
-- **J:** hoppa.
+- **Mellanslag:** hoppa (J fungerar också).
 - **W / S eller ↑ / ↓:** ändra vinkel.
-- **Q / E:** ändra kraft.
+- **Håll K:** ladda skottet. Kraften pendlar mellan 12 och 100 %; släpp när mätaren står rätt.
 - **Tab:** byt mellan raket, studsbomb, banankluster och Freedom.
 - **T eller Mål-knappen:** välj en annan levande motståndare för Freedom. När en tur börjar väljs den närmaste motståndaren.
-- **Mellanslag:** skjut.
+- **Släpp K:** skjut med den visade kraften. På pekskärm: håll och släpp skottknappen.
 - **M:** ljud av/på.
 - **Esc eller ?:** hjälp och paus.
 - **R eller ↻:** tillbaka till startskärmen. Starta därefter en ny duell.
@@ -111,3 +111,9 @@ Mätningar, säkerhetsgränser och reproducerbara tester finns i [prestandaguide
 Spelet har lokal tvåspelarduell och privata onlinematcher för 2–6 spelare på fem banor. Jesus är en spelbar figur, inte en AI-motståndare. Online kräver en separat publicerad relayserver: GitHub Pages kan bara servera själva spelet. Se [onlineguiden](online-server/README.md). Utan serveradress fungerar lokal duell och onlinelobbyn förklarar vad som saknas.
 
 Inga spelarkonton, chatt, publika rum, topplistor eller beständiga matchresultat ingår. Den som skapar rummet är matchvärd; detta är ett vänskapsspel, inte ett fusksäkert tävlingssystem. Host-migrering och återställning efter stängd/laddad-om flik ingår inte.
+
+### Kompakta kontroller och laddade skott
+
+Arenan använder hela skärmens bredd och renderas bakom genomskinliga kantkontroller. På dator visas små tangenttips, spelarkort, vapenval och laddmätare; på pekskärm finns minst 44-pixlars knappar. Stående läge behåller hela arenan utan att sträcka bilden och tipsar om liggande läge. Kamerans ortografiska projektion och pekkoordinater förblir exakt synkroniserade.
+
+Skott laddas lokalt med en jämn triangelvåg (12–100–12 % på två sekunder). Ett tryck äger laddningen; extra fingrar eller tangentupprepning kan inte starta om eller släppa den. Fokusförlust, avbruten pekgest, meny, frånkoppling och turbyte avbryter utan skott. Gästens släpp skickar exakt vald `shot_power`; värden validerar tal, ändlighet, 12–100-gränser, tur, plats och sekvens före avfyrning. Protokoll 3 behålls och äldre gäster fungerar mot nya värdar. Nya gäster ber äldre värdar att ladda om i stället för att skjuta med fel kraft. Serverstödet ska publiceras före klienten.

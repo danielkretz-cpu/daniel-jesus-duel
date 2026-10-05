@@ -135,6 +135,8 @@ func angle_for(game) -> float:
 	return clampf(_angle + _angle_correction, 5, 85) if _show(game) else game.angle
 
 func power_for(game) -> float:
+	if game._charge_active or game._released_context == game._charge_key():
+		return game._charge_power
 	return clampf(_power + _power_correction, 12, 100) if _show(game) else game.power
 
 func face_for(game, index: int) -> float:

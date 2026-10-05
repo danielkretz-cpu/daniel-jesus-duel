@@ -13,6 +13,9 @@ class DummyGame:
 	var craters: Array = []
 	var angle := 46.0
 	var power := 70.0
+	var _charge_active := false
+	var _charge_power := 12.0
+	var _released_context := ""
 	var move_left := 170.0
 	var _state_age := 0.0
 	var _host_focused := true
@@ -23,6 +26,8 @@ class DummyGame:
 	var ledge := false
 	var held := {}
 	var fighters := [{"pos": Vector2(50, 300), "face": 1.0, "ground": true, "hp": 100, "vel": Vector2.ZERO}, {"pos": Vector2(100, 300), "face": 1.0, "ground": true, "hp": 100, "vel": Vector2.ZERO}]
+	func _charge_key() -> String:
+		return "%d/%d/%s" % [turn, active, phase]
 	func _can_control() -> bool:
 		return connected and not help_open and phase == "aim" and active == net.seat
 	func _held_value(action: String, _key1: int, _key2: int) -> float:

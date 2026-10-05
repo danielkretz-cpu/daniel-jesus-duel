@@ -22,7 +22,7 @@ Queued full state snapshots are coalesced without crossing control-message bound
 
 ### Local visual prediction
 
-Guest movement and keyboard aim/power are previewed locally with a short bounded horizon, then reconciled to authoritative snapshots. Opposing visual correction cannot overpower a newly accepted local movement or keyboard-aim step. Only grounded horizontal movement is predicted; jumping, projectiles, hits, HP and terrain remain host-confirmed. Prediction clears when the turn, phase, terrain, connection or control eligibility changes, and stops on stale state. No new protocol fields or authoritative input replay are introduced.
+Guest movement and keyboard aim are previewed locally with a short bounded horizon, then reconciled to authoritative snapshots. Opposing visual correction cannot overpower a newly accepted local movement or keyboard-aim step. Only grounded horizontal movement is predicted; jumping, projectiles, hits, HP and terrain remain host-confirmed. Prediction clears when the turn, phase, terrain, connection or control eligibility changes, and stops on stale state. Movement prediction does not introduce authoritative input replay. The charge-control update adds optional `shot_power` on release and `charge_controls: 1` in snapshots while retaining protocol 3. The local charge meter never reconciles back to a delayed host power value; the host validates the chosen release power before launching.
 
 ## Reproducible checks
 
