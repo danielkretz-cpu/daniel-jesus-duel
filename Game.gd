@@ -1166,17 +1166,23 @@ func _apply_remote_input(data: Dictionary) -> bool:
 	_applying_remote = false
 	return true
 
+func _wire_float(value: float) -> float:
+	# JSON decimal parsing may move a binary64 number by one ULP in Godot.
+	# Canonical wire scalars use binary32, matching the engine's Vector2 data.
+	# Re-normalize after parsing so every client holds the same exact wire state.
+	return PackedFloat32Array([value])[0]
+
 func network_snapshot() -> Dictionary:
 	var people: Array = []
 	for f in fighters:
 		people.append({"pos": [f.pos.x, f.pos.y], "vel": [f.vel.x, f.vel.y], "hp": f.hp, "face": f.face, "ground": f.ground})
 	var bullet := {}
 	if not projectile.is_empty():
-		bullet = {"pos": [projectile.pos.x, projectile.pos.y], "vel": [projectile.vel.x, projectile.vel.y], "age": projectile.age, "weapon": projectile.weapon, "bounces": projectile.bounces}
+		bullet = {"pos": [projectile.pos.x, projectile.pos.y], "vel": [projectile.vel.x, projectile.vel.y], "age": _wire_float(projectile.age), "weapon": projectile.weapon, "bounces": projectile.bounces}
 	var path: Array = []
 	for point in trail:
 		path.append([point.x, point.y])
-	return {"schema": 1, "paused": (not _host_focused if net != null and net.seat == 0 else _host_paused) if online else false, "phase": phase, "turn": turn, "active": active, "angle": angle, "power": power, "weapon": weapon, "wind": wind, "move_left": move_left, "turn_clock": turn_clock, "settle_clock": settle_clock, "winner": winner, "shots": shots, "hits": hits, "fighters": people, "projectile": bullet, "terrain_version": craters.size(), "craters": craters.duplicate(true), "trail": path}
+	return {"schema": 1, "paused": (not _host_focused if net != null and net.seat == 0 else _host_paused) if online else false, "phase": phase, "turn": turn, "active": active, "angle": _wire_float(angle), "power": _wire_float(power), "weapon": weapon, "wind": _wire_float(wind), "move_left": _wire_float(move_left), "turn_clock": _wire_float(turn_clock), "settle_clock": _wire_float(settle_clock), "winner": winner, "shots": shots, "hits": hits, "fighters": people, "projectile": bullet, "terrain_version": craters.size(), "craters": craters.duplicate(true), "trail": path}
 
 func _number_in(value, low: float, high: float) -> bool:
 	return (value is float or value is int) and is_finite(float(value)) and float(value) >= low and float(value) <= high
@@ -1249,20 +1255,20 @@ func apply_network_snapshot(data: Dictionary) -> bool:
 	phase = str(data.phase)
 	turn = int(data.turn)
 	active = int(data.active)
-	angle = float(data.angle)
-	power = float(data.power)
+	angle = _wire_float(float(data.angle))
+	power = _wire_float(float(data.power))
 	weapon = int(data.weapon)
-	wind = float(data.wind)
-	move_left = float(data.move_left)
-	turn_clock = float(data.turn_clock)
-	settle_clock = float(data.settle_clock)
+	wind = _wire_float(float(data.wind))
+	move_left = _wire_float(float(data.move_left))
+	turn_clock = _wire_float(float(data.turn_clock))
+	settle_clock = _wire_float(float(data.settle_clock))
 	winner = int(data.winner)
 	shots = int(data.shots)
 	hits = int(data.hits)
 	projectile.clear()
 	if not data.projectile.is_empty():
 		var b: Dictionary = data.projectile
-		projectile = {"pos": Vector2(float(b.pos[0]), float(b.pos[1])), "vel": Vector2(float(b.vel[0]), float(b.vel[1])), "age": float(b.age), "weapon": int(b.weapon), "bounces": int(b.bounces)}
+		projectile = {"pos": Vector2(float(b.pos[0]), float(b.pos[1])), "vel": Vector2(float(b.vel[0]), float(b.vel[1])), "age": _wire_float(float(b.age)), "weapon": int(b.weapon), "bounces": int(b.bounces)}
 	trail.clear()
 	for point in data.trail:
 		trail.append(Vector2(float(point[0]), float(point[1])))

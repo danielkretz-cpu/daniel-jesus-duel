@@ -59,6 +59,26 @@ func run() -> void:
 	connected(guest, 1)
 	check(transfer(), "Guest accepts canonical initial state through JSON")
 	check(host.network_snapshot() == guest.network_snapshot(), "Initial fighters, turn and aim match exactly")
+	# Regression: this exact binary32 wind used to parse one binary64 ULP high.
+	host.wind = 27.700096130371094
+	check(transfer() and host.network_snapshot() == guest.network_snapshot(), "Known JSON parser one-ULP wind edge normalizes to exact canonical state")
+	var precision_rng := RandomNumberGenerator.new()
+	precision_rng.seed = 20261005
+	var precision_ok := true
+	for _sample in range(1000):
+		host.wind = precision_rng.randf_range(-32, 32)
+		host.angle = precision_rng.randf_range(5, 85)
+		host.power = precision_rng.randf_range(12, 100)
+		host.move_left = precision_rng.randf_range(0, 170)
+		host.turn_clock = precision_rng.randf_range(0, 40)
+		host.settle_clock = precision_rng.randf_range(-4, 2)
+		if not transfer() or host.network_snapshot() != guest.network_snapshot():
+			precision_ok = false
+			break
+	check(precision_ok, "1000 varied numeric snapshots round-trip with exact canonical equality")
+	host.start_game()
+	host.wind = 0
+	check(transfer(), "Precision stress resets into the original deterministic match")
 	host._aim_at(Vector2(host.fighters[0].pos.x, host.world_top + 100))
 	check(host.fighters[0].face == 1.0 and host._valid_snapshot(host.network_snapshot()), "Vertical aiming preserves a valid facing direction")
 	host.angle = 46
