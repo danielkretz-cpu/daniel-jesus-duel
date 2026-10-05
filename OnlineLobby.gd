@@ -17,6 +17,7 @@ var room_label: Label
 var connected := false
 var heading: Label
 var column: VBoxContainer
+var _box_width := 676.0
 
 func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_STOP
@@ -97,7 +98,7 @@ func place(origin: Vector2, factor: float, top: float, tall: bool) -> void:
 	scale = Vector2.ONE * factor
 	size = Vector2(1280, 2200 if tall else 800)
 	box.position = Vector2(80 if tall else 302, top + 5)
-	box.size = Vector2(1120 if tall else 676, 450)
+	_box_width = 1120.0 if tall else 676.0
 	column.add_theme_constant_override("separation", 20 if tall else 12)
 	heading.add_theme_font_size_override("font_size", 42 if tall else 25)
 	message.add_theme_font_size_override("font_size", 32 if tall else 18)
@@ -108,6 +109,13 @@ func place(origin: Vector2, factor: float, top: float, tall: bool) -> void:
 		button.add_theme_font_size_override("font_size", 32 if tall else 20)
 	code.custom_minimum_size = Vector2(420 if tall else 272, 132 if tall else 58)
 	code.add_theme_font_size_override("font_size", 42 if tall else 24)
+	# Font/minimum-size changes propagate through nested Containers deferred.
+	# Shrinking before they propagate retains the old portrait minimum forever.
+	box.custom_minimum_size = Vector2(_box_width, 0)
+	_fit_box.call_deferred()
+
+func _fit_box() -> void:
+	box.reset_size()
 
 func refresh(session) -> void:
 	connected = session.status == "connected"
@@ -124,3 +132,5 @@ func refresh(session) -> void:
 	copy_button.visible = has_room
 	reconnect_button.visible = has_room and session.status == "disconnected"
 	back_button.text = "LÄMNA RUMMET" if has_room else "TILLBAKA TILL START"
+
+	_fit_box.call_deferred()

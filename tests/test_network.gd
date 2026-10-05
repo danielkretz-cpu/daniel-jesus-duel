@@ -139,6 +139,18 @@ func run() -> void:
 		var online_end: Vector2 = host.buttons.online.end * host.ui_scale + host.ui_origin
 		check(online_end.x <= viewport.x and online_end.y <= viewport.y, "Online entry stays on screen at %dx%d" % [viewport.x, viewport.y])
 	host._leave_online()
+	host._open_online()
+	for viewport in [Vector2(430, 860), Vector2(1180, 812), Vector2(430, 932), Vector2(852, 393), Vector2(1280, 800)]:
+		host._layout(viewport)
+		await process_frame
+		await process_frame
+		var box_end: Vector2 = (host.lobby.box.position + host.lobby.box.size) * host.ui_scale + host.ui_origin
+		var wanted_width := 1120.0 if host.portrait else 676.0
+		check(host.lobby.box.size.x <= wanted_width + 1, "Lobby shrinks to current orientation width at %dx%d" % [viewport.x, viewport.y])
+		check(box_end.x <= viewport.x + 1 and box_end.y <= viewport.y + 1, "Entire lobby stays on screen after rotation to %dx%d" % [viewport.x, viewport.y])
+		var back_end: Vector2 = host.lobby.back_button.get_global_rect().end
+		check(back_end.x <= viewport.x + 1 and back_end.y <= viewport.y + 1, "Back button remains reachable after rotation to %dx%d" % [viewport.x, viewport.y])
+	host._leave_online()
 	host.start_game()
 	check(host.phase == "aim" and not host.online, "Local duel still starts after leaving online flow")
 	print("RESULT: %d online checks, %d failures" % [checks, failures])
