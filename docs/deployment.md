@@ -28,8 +28,8 @@ spelpaketet blir tillgängliga för allmänheten.
 Arbetsflödet `.github/workflows/web-ci.yml` kör följande:
 
 1. Hämtar den aktuella källkoden.
-2. Verifierar och installerar **Godot 4.6.3** lokalt i byggmiljön.
-3. Importerar resurser, provstartar spelet, kör `tests/test_game.gd` och exporterar
+2. Installerar låsta Node-beroenden med `npm ci` och kör relayserverns WebSocket-tester.
+3. Verifierar och installerar **Godot 4.6.3**, importerar resurser, provstartar spelet, kör `tests/test_game.gd` och `tests/test_network.gd` och exporterar
    Web-versionen till `build/web/index.html`.
 4. Kontrollerar att HTML, JavaScript, WASM och spelpaket finns och att motorn är
    riktig WebAssembly. Fel i Godot-loggen stoppar byggningen även om Godot skulle
@@ -99,3 +99,41 @@ Officiella källor:
 
 `vercel.json` och [Vercel-guiden](vercel.md) finns kvar som ett valfritt alternativ.
 De behövs inte för GitHub Pages och aktiverar inget Vercel-konto automatiskt.
+
+
+## Online på varsin skärm
+
+GitHub Pages är en statisk värd. Onlinespelet behöver dessutom den lilla
+relayservern i [`online-server/`](../online-server/README.md). Servern är en
+Cloudflare Worker med SQLite-baserade Durable Objects. Spelarna behöver inga
+konton, men ägaren behöver konfigurera och publicera servern på sitt konto.
+GitHub-workflowet publicerar **inte** Cloudflare-servern och behöver inga
+Cloudflare-nycklar.
+
+Efter godkänd serverpublicering, sätt dess riktiga `wss://`-adress i
+`network_config.json` och bygg/publicera spelet igen. `ALLOWED_ORIGIN` i servern
+ska matcha spelwebbplatsens origin. Rums- och återanslutningsnycklar ska aldrig
+sparas i Git, i spelkonfigurationen eller i delningslänkar. Konfigurationens
+serveradress är offentlig, ingen hemlighet.
+
+En tom serveradress är tillåten: lokal duell fungerar, medan onlinelobbyn
+uttryckligen säger att onlineservern ännu inte är aktiverad. Serverkod, tester
+och `node_modules` packas inte in i spelets PCK.
+
+### Fullständigt lokalt nätverkstest
+
+```sh
+(cd online-server && npm ci && npm test)
+bash scripts/build-web.sh
+bash scripts/test-online.sh
+```
+
+Det sista kommandot startar en tillfällig Worker på loopback, kopplar upp två
+riktiga Godot-klienter via WebSocket och verifierar båda spelarnas skott,
+terrängsynkronisering, turordning, frånkoppling, återanslutning och paus när
+värdens fönster hamnar i bakgrunden. Servern stoppas efter testet. Det kräver
+varken Cloudflare-inloggning eller något externt spelarkonto.
+
+Detta ersätter inte ett slutligt två-enhetstest mot den publicerade HTTPS/WSS-
+adressen. WebGL 2, mobiltangentbord och verkliga mobilnät behöver kontrolleras
+på de webbläsare som ska användas.

@@ -1,0 +1,13 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "kraterkompisar-online",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "observability": {"enabled": false},
+  "vars": {"ALLOWED_ORIGIN": "https://danielkretz-cpu.github.io"},
+  "durable_objects": {
+    "bindings": [{"name": "ROOMS", "class_name": "GameRoom"}]
+  },
+  "migrations": [{"tag": "v1", "new_sqlite_classes": ["GameRoom"]}]
+}

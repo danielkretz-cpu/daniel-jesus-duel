@@ -4,7 +4,11 @@ En liten, färdig artilleriduell i **Godot 4.6.3**. Daniel och Jesus möts på S
 
 ## Spela
 
-Två personer turas om på samma mobil eller dator. Starta duellen, flytta till ett bra läge, ställ in vinkel och kraft och skjut. Lämna sedan över skärmen. Den sista överlevande vinner.
+Välj **Lokal duell** för att turas om på samma mobil eller dator. Välj **Online** för att spela på varsin skärm när onlineservern har aktiverats.
+
+Online skapar den första spelaren ett privat rum och spelar Daniel. Den andra skriver in den åttateckniga rumskoden och spelar Jesus. Inga spelarkonton behövs. Bara den som har turen kan styra sin figur. Skjut, lämna en krater och försök bli den sista överlevande.
+
+Om nätverket bryts pausas matchen. Använd **Återanslut** i samma öppna spelflik. Daniel behöver hålla sin spelflik öppen och i förgrunden, eftersom hans enhet räknar ut matchen. Om fliken laddas om eller stängs försvinner dess tillfälliga återanslutningsnyckel; skapa då ett nytt rum. Rum stängs efter två timmar.
 
 - **A / D eller ← / →:** flytta. Varje tur har en begränsad gångsträcka.
 - **J:** hoppa.
@@ -33,6 +37,7 @@ Projektet använder GDScript och Compatibility-renderaren. Ingen .NET, databas, 
 ```sh
 godot --headless --path . --editor --import --quit
 godot --headless --path . --script res://tests/test_game.gd
+godot --headless --path . --script res://tests/test_network.gd
 ```
 
 CI och byggskript beskrivs i [docs/deployment.md](docs/deployment.md). Webbversionen exporteras till `build/web/index.html` och måste serveras via HTTP(S), inte öppnas med `file://`.
@@ -49,6 +54,10 @@ python3 -m http.server 8000 --directory build/web
 
 - `Game.gd`: spelfysik, turer, förstörbar terräng, originalgrafik, ljud och responsivt gränssnitt.
 - `Main.tscn`: huvudscenen.
+- `NetSession.gd`, `OnlineLobby.gd`: privat rumslobby och WebSocket-klient.
+- `network_config.json`: offentlig serveradress, ingen hemlighet. Tom adress visar tydligt att online inte är aktiverat.
+- `online-server/`: Cloudflare Worker med privata tvåspelarrum och lokala tester.
+- `tests/test_online_live.gd`, `scripts/test-online.sh`: två riktiga Godot-klienter mot den lokala relayservern.
 - `assets/`: ikon och paketerade typsnitt.
 - `tests/test_game.gd`: deterministiska tester som kör den riktiga Godot-scenen.
 - `scripts/`, `.github/`, `vercel.json`: bygg- och leveransflöde.
@@ -65,4 +74,6 @@ Godot är fri programvara under MIT-licensen: https://godotengine.org/license/ .
 
 ## Avgränsning
 
-Första versionen är en lokal tvåspelarduell på en bana. Jesus är en spelbar figur, inte en AI-motståndare. Ingen onlinemultiplayer, sparade matchresultat eller kontohantering ingår. Fungerande webbexport och tester följer med, men publicering kräver att rätt GitHub-/hostingkonto ansluts och att den första leveransen verifieras.
+Spelet har lokal tvåspelarduell och kodbaserad onlineduell på en bana. Jesus är en spelbar figur, inte en AI-motståndare. Online kräver en separat publicerad relayserver: GitHub Pages kan bara servera själva spelet. Se [onlineguiden](online-server/README.md). Utan serveradress fungerar lokal duell och onlinelobbyn förklarar vad som saknas.
+
+Inga spelarkonton, chatt, publika rum, topplistor eller beständiga matchresultat ingår. Daniel är matchvärd; detta är ett vänskapsspel, inte ett fusksäkert tävlingssystem. Host-migrering och återställning efter stängd/laddad-om flik ingår inte.

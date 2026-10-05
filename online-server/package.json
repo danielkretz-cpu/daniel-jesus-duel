@@ -1,0 +1,20 @@
+{
+  "name": "kraterkompisar-online",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node dev.js",
+    "test": "node --test test/*.test.js",
+    "deploy": "wrangler deploy",
+    "dev:wrangler": "wrangler dev --ip 127.0.0.1 --port 8787"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "miniflare": "5.20261001.0-alpha",
+    "wrangler": "4.147.0",
+    "ws": "8.22.0"
+  }
+}
