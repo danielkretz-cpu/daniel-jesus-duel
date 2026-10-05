@@ -88,7 +88,7 @@ async function pair(protocol) {
 
 test('public health endpoint reports protocol, with no private state', async () => {
   const response = await fetch(base.replace('ws:', 'http:') + '/health');
-  assert.deepEqual(await response.json(), { ok: true, game: 'Kraterkompisar', protocol: 3, supported_protocols: [1, 2, 3], transport_revision: 1 });
+  assert.deepEqual(await response.json(), { ok: true, game: 'Kraterkompisar', protocol: 3, supported_protocols: [1, 2, 3], transport_revision: 1, shot_power_revision: 1 });
 });
 
 test('real sockets create/join, relay terrain state and only the correct guest turn', async () => {

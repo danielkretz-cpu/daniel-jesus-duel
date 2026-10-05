@@ -138,6 +138,8 @@ function validInput(m, protocol = 1) {
   if (![-1, 0, 1].includes(m.move) || ![-1, 0, 1].includes(m.angle_axis) || ![-1, 0, 1].includes(m.power_axis)) return false;
   if (m.aim !== undefined && (!Array.isArray(m.aim) || m.aim.length !== 2 || ![-1, 1].includes(m.aim[0]) || !number(m.aim[1], 5, 85))) return false;
   if (m.action !== undefined && !(protocol === 3 ? ['jump', 'fire', 'weapon', 'target'] : ['jump', 'fire', 'weapon']).includes(m.action)) return false;
+  // Release power is optional for older clients, but only a fire can supply it.
+  if (m.shot_power !== undefined && (m.action !== 'fire' || !number(m.shot_power, 12, 100))) return false;
   return true;
 }
 
@@ -145,7 +147,7 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     if (url.pathname === '/health') {
-      return Response.json({ ok: true, game: 'Kraterkompisar', protocol: PROTOCOL, supported_protocols: SUPPORTED_PROTOCOLS, transport_revision: 1 }, { headers: { 'Cache-Control': 'no-store' } });
+      return Response.json({ ok: true, game: 'Kraterkompisar', protocol: PROTOCOL, supported_protocols: SUPPORTED_PROTOCOLS, transport_revision: 1, shot_power_revision: 1 }, { headers: { 'Cache-Control': 'no-store' } });
     }
     if (url.pathname !== '/room') return new Response('Not found', { status: 404 });
     if (request.method !== 'GET' || request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') return new Response('WebSocket required', { status: 426 });
@@ -360,7 +362,7 @@ export class GameRoom extends DurableObject {
       if (named && (s.fighters[auth.seat].hp <= 0 || (m.target !== undefined && s.fighters[m.target].hp <= 0))) return this.reject(ws, 'bad_message', 'Välj en spelare som är kvar i matchen.');
       if (named) this.room.input_seqs[auth.seat] = m.seq;
       else this.room.input_seq = m.seq;
-      this.broadcast({ type: 'input', seat: auth.seat, seq: m.seq, turn: m.turn, move: m.move, angle_axis: m.angle_axis, power_axis: m.power_axis, ...(m.aim ? { aim: m.aim } : {}), ...(m.action ? { action: m.action } : {}), ...(named && m.target !== undefined ? { target: m.target } : {}) }, 0);
+      this.broadcast({ type: 'input', seat: auth.seat, seq: m.seq, turn: m.turn, move: m.move, angle_axis: m.angle_axis, power_axis: m.power_axis, ...(m.aim ? { aim: m.aim } : {}), ...(m.action ? { action: m.action } : {}), ...(m.shot_power !== undefined ? { shot_power: m.shot_power } : {}), ...(named && m.target !== undefined ? { target: m.target } : {}) }, 0);
       return;
     }
     this.reject(ws, 'bad_message', 'Okänd meddelandetyp.');

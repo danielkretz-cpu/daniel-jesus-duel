@@ -386,3 +386,85 @@ test('v3 delayed delivery burst stays connected, relays latest state and retains
   assert.equal(error.code, 'rate_limited'); assert.equal(error.fatal, true);
   await closeAll(peers);
 });
+
+test('release fire preserves exact optional power and legacy input shape across all protocols', async () => {
+  for (const protocol of [1, 2, 3]) {
+    let peers;
+    if (protocol === 3) {
+      ({ peers } = await room(2));
+      await start(peers);
+    } else {
+      const { host, guest } = await pair(protocol);
+      peers = [host, guest];
+    }
+    const [host, guest] = peers;
+    const value = protocol === 3 ? snapshotV3(2, { active: 1, target: 0 })
+      : protocol === 2 ? snapshotV2({ active: 1 }) : snapshot({ active: 1 });
+    await state(peers, 1, value);
+    let seq = 0;
+    for (const shotPower of [undefined, 12, 57.375, 100]) {
+      const sent = { type: 'input', seq: ++seq, turn: 1, move: 0, angle_axis: 0, power_axis: 0, action: 'fire',
+        ...(shotPower === undefined ? {} : { shot_power: shotPower }) };
+      // Role spoofing and unknown fields must never widen the whitelist.
+      guest.send({ ...sent, seat: 0, owner: 0, power: 999, injected: true });
+      assert.deepEqual(await host.next('input'), { ...sent, seat: 1 });
+    }
+    await closeAll(peers);
+  }
+});
+
+test('v3 release power rejects wrong types, nonfinite values, bounds and non-fire injection', async () => {
+  const { host, peers } = await room(2);
+  const guest = peers[1];
+  await start(peers);
+  await state(peers, 1, snapshotV3(2, { active: 1, target: 0 }));
+  const fire = { ...input(1), action: 'fire' };
+  for (const shotPower of [null, '70', true, false, [], {}, 0, 11.999, 100.001, -1, NaN, Infinity, -Infinity]) {
+    // JSON encodes NaN/Infinity as null, which must not be treated as absence.
+    guest.send({ ...fire, shot_power: shotPower });
+    const error = await guest.next('error');
+    assert.equal(error.code, 'bad_message', String(shotPower));
+    assert.equal(error.fatal, false);
+  }
+  // Valid JSON numeric overflow reaches validation as +/-Infinity.
+  for (const rawNumber of ['1e400', '-1e400']) {
+    guest.ws.send(JSON.stringify({ ...fire, shot_power: 'OVERFLOW' }).replace('"OVERFLOW"', rawNumber));
+    assert.equal((await guest.next('error')).code, 'bad_message');
+  }
+  for (const action of [undefined, 'jump', 'weapon', 'target']) {
+    guest.send({ ...input(1), ...(action ? { action } : {}), shot_power: 70 });
+    assert.equal((await guest.next('error')).code, 'bad_message');
+  }
+  await noInput(host, guest);
+  // Invalid controls neither consume the sequence nor disconnect the guest.
+  guest.send({ ...fire, shot_power: 63.125 });
+  assert.deepEqual(await host.next('input'), { ...fire, seat: 1, shot_power: 63.125 });
+  await closeAll(peers);
+});
+
+test('literal NaN release power is rejected as invalid JSON and never forwarded', async () => {
+  const { host, peers } = await room(2);
+  await start(peers);
+  await state(peers, 1, snapshotV3(2, { active: 1, target: 0 }));
+  peers[1].ws.send(JSON.stringify({ ...input(1), action: 'fire', shot_power: 'NAN' }).replace('"NAN"', 'NaN'));
+  const error = await peers[1].next('error');
+  assert.equal(error.code, 'bad_message'); assert.equal(error.fatal, true);
+  host.send({ type: 'ping' }); await host.next('pong');
+  assert.equal(host.queue.some(m => m.type === 'input'), false);
+  await closeAll(peers);
+});
+
+test('v3 optional charge capability survives full snapshot relay and guest reconnect', async () => {
+  const { h, peers, welcomes } = await room(2);
+  await start(peers);
+  // Old hosts omit the capability; their unchanged snapshot remains valid.
+  await state(peers, 1, snapshotV3(2));
+  const charged = snapshotV3(2, { charge_controls: 1 });
+  await state(peers, 2, charged);
+  await peers[1].close();
+  const resumed = connect(`/room?code=${h.room}&protocol=3&token=${welcomes[1].token}`);
+  const welcome = await resumed.next('welcome');
+  assert.equal(welcome.protocol, 3);
+  assert.deepEqual(welcome.snapshot, charged);
+  await closeAll([peers[0], resumed]);
+});
