@@ -1,9 +1,9 @@
-// Kraterkompisar: small, private two-player rooms. The host runs game physics.
+// Kraterkompisar: small, private rooms for two to six players. The host runs game physics.
 // No accounts, analytics, chat, public room listing, or third-party calls.
 import { DurableObject } from 'cloudflare:workers';
 
-const PROTOCOL = 2;
-const SUPPORTED_PROTOCOLS = [1, 2];
+const PROTOCOL = 3;
+const SUPPORTED_PROTOCOLS = [1, 2, 3];
 const MAX_MESSAGE = 65_536;
 const ROOM_TTL = 2 * 60 * 60 * 1000;
 const ROOM_CODE = /^[A-HJ-NP-Z2-9]{8}$/;
@@ -24,7 +24,7 @@ async function tokenHash(token) {
 function socketError(code, message) {
   const pair = new WebSocketPair();
   pair[1].accept();
-  pair[1].send(JSON.stringify({ type: 'error', code, message }));
+  pair[1].send(JSON.stringify({ type: 'error', code, message, fatal: true }));
   pair[1].close(1008, code);
   return new Response(null, { status: 101, webSocket: pair[0] });
 }
@@ -57,10 +57,24 @@ function requestedProtocol(url) {
   const values = url.searchParams.getAll('protocol');
   // Only a missing parameter implies legacy v1. Reject ambiguous/unknown values.
   if (!values.length) return 1;
-  return values.length === 1 && ['1', '2'].includes(values[0]) ? Number(values[0]) : null;
+  return values.length === 1 && ['1', '2', '3'].includes(values[0]) ? Number(values[0]) : null;
 }
 function versionMismatch() {
   return socketError('version_mismatch', 'Spelversionerna passar inte ihop. Uppdatera spelet och skapa ett nytt rum.');
+}
+// Names are plain text; never HTML. Count Unicode code points, not UTF-16 units.
+function cleanName(value) {
+  if (typeof value !== 'string' || value.length > 200) return null;
+  const name = value.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, '').trim();
+  return [...name].length >= 1 && [...name].length <= 20 && !/[<>]/u.test(name) ? name : null;
+}
+function validV3Projectile(p, count, fragment = false) {
+  if (!record(p)) return false;
+  if (!fragment && !Object.keys(p).length) return true;
+  return vector(p.pos) && vector(p.vel) && number(p.age, 0, 10)
+    && integer(p.weapon, fragment ? 4 : 0, fragment ? 4 : 3)
+    && integer(p.bounces, 0, 4) && integer(p.owner, 0, count - 1)
+    && integer(p.target, 0, count - 1) && p.target !== p.owner;
 }
 function validV2Projectile(p, fragment = false) {
   if (!record(p)) return false;
@@ -70,15 +84,16 @@ function validV2Projectile(p, fragment = false) {
     && integer(p.bounces, 0, 4) && integer(p.owner, 0, 1) && integer(p.target, 0, 1)
     && p.target === 1 - p.owner;
 }
-function validSnapshot(s, protocol) {
+function validSnapshot(s, protocol, count = 2) {
   if (!record(s) || s.schema !== protocol) return false;
   if (!['title', 'aim', 'flying', 'settle', 'over'].includes(s.phase)) return false;
   if (s.paused !== undefined && typeof s.paused !== 'boolean') return false;
-  if (!integer(s.turn, 1, 10000) || !integer(s.active, 0, 1) || !integer(s.winner, -1, 1)) return false;
-  if (!number(s.angle, 5, 85) || !number(s.power, 12, 100) || !integer(s.weapon, 0, protocol === 2 ? 3 : 1)) return false;
+  if (!integer(count, 2, 6) || (protocol !== 3 && count !== 2)) return false;
+  if (!integer(s.turn, 1, 10000) || !integer(s.active, 0, count - 1) || !integer(s.winner, -1, count - 1)) return false;
+  if (!number(s.angle, 5, 85) || !number(s.power, 12, 100) || !integer(s.weapon, 0, protocol >= 2 ? 3 : 1)) return false;
   if (!number(s.wind, -100, 100) || !number(s.move_left, 0, 170.01) || !number(s.turn_clock, -10, 40.1) || !number(s.settle_clock, -20, 10)) return false;
   if (!integer(s.shots, 0, 10000) || !integer(s.hits, 0, 20000)) return false;
-  if (!Array.isArray(s.fighters) || s.fighters.length !== 2) return false;
+  if (!Array.isArray(s.fighters) || s.fighters.length !== count) return false;
   for (const f of s.fighters) {
     if (!f || !vector(f.pos) || !vector(f.vel) || !integer(f.hp, 0, 100) || ![-1, 1].includes(f.face) || typeof f.ground !== 'boolean') return false;
   }
@@ -87,6 +102,20 @@ function validSnapshot(s, protocol) {
     if (!Array.isArray(c) || c.length !== 3 || !number(c[0], -200, 1500) || !number(c[1], -1500, 1000) || !number(c[2], 1, 100)) return false;
   }
   if (!Array.isArray(s.trail) || s.trail.length > 32 || !s.trail.every(v => vector(v))) return false;
+  if (protocol === 3) {
+    // Leave room for the resume credential and full roster in a welcome packet.
+    if (encoder.encode(JSON.stringify(s)).length > MAX_MESSAGE - 4096) return false;
+    if (!integer(s.map_id, 0, 4) || s.phase === 'title') return false;
+    if (!Array.isArray(s.freedom) || s.freedom.length !== count || !s.freedom.every(n => integer(n, 0, 1))) return false;
+    if (!integer(s.target, 0, count - 1) || s.target === s.active) return false;
+    if (s.phase === 'aim' && (s.fighters[s.active].hp === 0 || s.fighters[s.target].hp === 0)) return false;
+    const survivors = s.fighters.flatMap((f, seat) => f.hp > 0 ? [seat] : []);
+    if (s.phase === 'over') {
+      if (survivors.length > 1 || s.winner !== (survivors[0] ?? -1)) return false;
+    } else if (s.winner !== -1) return false;
+    if (!Array.isArray(s.fragments) || s.fragments.length > 5 || !s.fragments.every(p => validV3Projectile(p, count, true))) return false;
+    return validV3Projectile(s.projectile, count);
+  }
   if (protocol === 2) {
     if (!integer(s.map_id, 0, 4)) return false;
     if (!Array.isArray(s.freedom) || s.freedom.length !== 2 || !s.freedom.every(n => integer(n, 0, 1))) return false;
@@ -101,11 +130,11 @@ function validSnapshot(s, protocol) {
   }
   return true;
 }
-function validInput(m) {
+function validInput(m, protocol = 1) {
   if (!integer(m.seq, 0, Number.MAX_SAFE_INTEGER) || !integer(m.turn, 1, 10000)) return false;
   if (![-1, 0, 1].includes(m.move) || ![-1, 0, 1].includes(m.angle_axis) || ![-1, 0, 1].includes(m.power_axis)) return false;
   if (m.aim !== undefined && (!Array.isArray(m.aim) || m.aim.length !== 2 || ![-1, 1].includes(m.aim[0]) || !number(m.aim[1], 5, 85))) return false;
-  if (m.action !== undefined && !['jump', 'fire', 'weapon'].includes(m.action)) return false;
+  if (m.action !== undefined && !(protocol === 3 ? ['jump', 'fire', 'weapon', 'target'] : ['jump', 'fire', 'weapon']).includes(m.action)) return false;
   return true;
 }
 
@@ -129,7 +158,10 @@ export default {
     internal.searchParams.set('code', code);
     internal.searchParams.set('protocol', String(protocol));
     if (creating) internal.searchParams.set('mode', 'create');
-    if (url.searchParams.has('token')) internal.searchParams.set('token', url.searchParams.get('token'));
+    for (const key of ['token', 'name', 'capacity', 'map_id']) {
+      if (url.searchParams.getAll(key).length > 1) return socketError('bad_message', 'Upprepad inställning.');
+      if (url.searchParams.has(key)) internal.searchParams.set(key, url.searchParams.get(key));
+    }
     try {
       return await env.ROOMS.get(env.ROOMS.idFromName(code)).fetch(new Request(internal, { headers: { Upgrade: 'websocket' } }));
     } catch {
@@ -168,14 +200,22 @@ export class GameRoom extends DurableObject {
     // Old persisted rooms have no protocol field and remain strictly v1.
     // Check before allocating a guest seat or replacing any authenticated socket.
     if (this.room && protocol !== (this.room.protocol ?? 1)) return versionMismatch();
+    const named = protocol === 3;
     let token = url.searchParams.get('token') || '';
+    const name = named && (creating || !token) ? cleanName(url.searchParams.get('name') ?? 'Spelare') : null;
+    if (named && (creating || !token) && !name) return socketError('invalid_name', 'Välj ett namn med 1–20 tecken utan vinkelparenteser.');
     let seat;
     if (creating) {
       if (this.room) return socketError('room_exists', 'Prova att skapa ett nytt rum.');
+      const capacity = named ? Number(url.searchParams.get('capacity') ?? 6) : 2;
+      const mapId = named ? Number(url.searchParams.get('map_id') ?? 0) : 0;
+      if (!integer(capacity, 2, 6) || !integer(mapId, 0, 4)) return socketError('bad_message', 'Ogiltiga rumsinställningar.');
       token = randomHex();
       this.room = {
         code: url.searchParams.get('code'), protocol, expires_at: Date.now() + ROOM_TTL,
-        token_hashes: [await tokenHash(token), null], seq: 0, input_seq: 0, snapshot: null
+        token_hashes: named ? [await tokenHash(token)] : [await tokenHash(token), null],
+        ...(named ? { names: [name], capacity, map_id: mapId, started: false, input_seqs: [0] } : {}),
+        seq: 0, input_seq: 0, snapshot: null
       };
       seat = 0;
       await this.ctx.storage.setAlarm(this.room.expires_at);
@@ -188,10 +228,12 @@ export class GameRoom extends DurableObject {
         seat = this.room.token_hashes.indexOf(hash);
         if (seat < 0) return socketError('invalid_token', 'Kunde inte återansluta till din plats.');
       } else {
-        if (this.room.token_hashes[1]) return socketError('room_full', 'Rummet har redan två spelare.');
+        if (named && this.room.started) return socketError('match_started', 'Matchen har redan startat. Be värden skapa ett nytt rum.');
+        seat = named ? this.room.token_hashes.length : 1;
+        if (named ? seat >= this.room.capacity : this.room.token_hashes[1]) return socketError('room_full', 'Rummet är fullt.');
         token = randomHex();
-        this.room.token_hashes[1] = await tokenHash(token);
-        seat = 1;
+        this.room.token_hashes[seat] = await tokenHash(token);
+        if (named) { this.room.names.push(name); this.room.input_seqs.push(0); }
         await this.persist();
       }
     }
@@ -206,7 +248,7 @@ export class GameRoom extends DurableObject {
     server.send(JSON.stringify({
       type: 'welcome', protocol: this.room.protocol ?? 1, room: this.room.code, seat, host: seat === 0,
       token, peer_connected: seat === 0 ? presence.guest_connected : presence.host_connected,
-      ...presence, seq: this.room.seq, input_seq: this.room.input_seq, snapshot: this.room.snapshot,
+      ...presence, seq: this.room.seq, input_seq: named ? this.room.input_seqs[seat] : this.room.input_seq, snapshot: this.room.snapshot,
       expires_at: this.room.expires_at
     }));
     this.broadcast({ type: 'presence', ...presence });
@@ -217,13 +259,23 @@ export class GameRoom extends DurableObject {
     const sockets = seat === undefined ? this.ctx.getWebSockets() : this.ctx.getWebSockets(String(seat));
     return sockets.filter(ws => ws.readyState === 1);
   }
-  presence() { return { host_connected: this.sockets(0).length > 0, guest_connected: this.sockets(1).length > 0 }; }
+  presence() {
+    const base = { host_connected: this.sockets(0).length > 0, guest_connected: this.sockets(1).length > 0 };
+    if (this.room?.protocol !== 3) return base;
+    const roster = this.room.names.map((name, seat) => ({ seat, name, connected: this.sockets(seat).length > 0,
+      alive: (this.room.snapshot?.fighters[seat]?.hp ?? 100) > 0 }));
+    return { ...base, roster, capacity: this.room.capacity, map_id: this.room.map_id,
+      started: this.room.started, player_count: roster.length,
+      all_connected: roster.every(p => p.connected),
+      can_start: !this.room.started && roster.length >= 2 && roster.every(p => p.connected),
+      playable: this.room.started && base.host_connected && roster.every(p => !p.alive || p.connected) };
+  }
   broadcast(message, seat) {
     const data = JSON.stringify(message);
     for (const ws of this.sockets(seat)) { try { ws.send(data); } catch { /* close callback updates presence */ } }
   }
   reject(ws, code, message, close = false) {
-    try { ws.send(JSON.stringify({ type: 'error', code, message })); if (close) ws.close(1008, code); } catch { /* already closed */ }
+    try { ws.send(JSON.stringify({ type: 'error', code, message, ...(this.room?.protocol === 3 ? { fatal: close } : {}) })); if (close) ws.close(1008, code); } catch { /* already closed */ }
   }
   async persist() {
     if (this.room) { await this.ctx.storage.put('room', this.room); this.lastPersist = Date.now(); }
@@ -236,18 +288,41 @@ export class GameRoom extends DurableObject {
     }
     if (typeof raw !== 'string' || encoder.encode(raw).length > MAX_MESSAGE) return this.reject(ws, 'bad_message', 'Meddelandet är för stort.', true);
     const auth = ws.deserializeAttachment();
-    if (!auth || ![0, 1].includes(auth.seat) || ws.readyState !== 1) return;
+    if (!auth || !integer(auth.seat, 0, this.room.protocol === 3 ? this.room.names.length - 1 : 1) || ws.readyState !== 1) return;
     const now = Date.now();
-    if (now - auth.window >= 1000) { auth.window = now; auth.n = 0; }
+    if (now - auth.window >= 1000) { auth.window = now; auth.n = 0; auth.lobby_n = 0; }
     if (++auth.n > 40) return this.reject(ws, 'rate_limited', 'För många meddelanden.', true);
     ws.serializeAttachment(auth);
     let m;
     try { m = JSON.parse(raw); } catch { return this.reject(ws, 'bad_message', 'Ogiltigt meddelande.', true); }
     if (!m || typeof m !== 'object' || Array.isArray(m)) return this.reject(ws, 'bad_message', 'Ogiltigt meddelande.', true);
     if (m.type === 'ping') { ws.send(JSON.stringify({ type: 'pong' })); return; }
+    if (this.room.protocol === 3 && ['start', 'lobby', 'rename'].includes(m.type)) {
+      if (m.type !== 'rename' && auth.seat !== 0) return this.reject(ws, 'forbidden', 'Bara värden kan ändra rummet.');
+      if (this.room.started) return this.reject(ws, 'match_started', 'Matchen har redan startat.');
+      auth.lobby_n = (auth.lobby_n || 0) + 1;
+      ws.serializeAttachment(auth);
+      if (auth.lobby_n > 4) return this.reject(ws, 'rate_limited', 'Vänta en sekund innan du ändrar rummet igen.');
+      if (m.type === 'rename') {
+        const name = cleanName(m.name);
+        if (!name) return this.reject(ws, 'invalid_name', 'Välj ett namn med 1–20 tecken utan vinkelparenteser.');
+        this.room.names[auth.seat] = name;
+      } else {
+        if (m.map_id !== undefined && !integer(m.map_id, 0, 4)) return this.reject(ws, 'bad_message', 'Ogiltig karta.');
+        if (m.capacity !== undefined && (!integer(m.capacity, 2, 6) || m.capacity < this.room.names.length)) return this.reject(ws, 'bad_message', 'Ogiltigt antal platser.');
+        if (m.type === 'start' && !this.presence().can_start) return this.reject(ws, 'not_ready', 'Minst två spelare måste vara anslutna och alla reserverade platser tillbaka.');
+        if (m.map_id !== undefined) this.room.map_id = m.map_id;
+        if (m.capacity !== undefined) this.room.capacity = m.capacity;
+        if (m.type === 'start') this.room.started = true;
+      }
+      await this.persist();
+      this.broadcast({ type: m.type === 'start' ? 'started' : 'presence', ...this.presence() });
+      return;
+    }
     if (m.type === 'state') {
       if (auth.seat !== 0) return this.reject(ws, 'forbidden', 'Bara värden kan ändra matchen.');
-      if (!integer(m.seq, 1, Number.MAX_SAFE_INTEGER) || !validSnapshot(m.snapshot, this.room.protocol ?? 1)) return this.reject(ws, 'bad_message', 'Ogiltigt matchläge.');
+      if (this.room.protocol === 3 && !this.room.started) return this.reject(ws, 'not_started', 'Starta matchen i lobbyn först.');
+      if (!integer(m.seq, 1, Number.MAX_SAFE_INTEGER) || !validSnapshot(m.snapshot, this.room.protocol ?? 1, this.room.protocol === 3 ? this.room.names.length : 2) || (this.room.protocol === 3 && m.snapshot.map_id !== this.room.map_id)) return this.reject(ws, 'bad_message', 'Ogiltigt matchläge.');
       if (m.seq <= this.room.seq) return; // Duplicate/stale packets are idempotent.
       const firstSnapshot = this.room.snapshot === null;
       const pauseChanged = this.room.snapshot?.paused !== m.snapshot.paused;
@@ -256,17 +331,24 @@ export class GameRoom extends DurableObject {
       // Every accepted snapshot is complete. Persist at most four times/second,
       // normally once/second, plus major game events. No continuous alarm loop.
       if (firstSnapshot || pauseChanged || now - this.lastPersist >= 1000 || (m.commit === true && now - this.lastPersist >= 250)) await this.persist();
-      this.broadcast({ type: 'state', seq: m.seq, commit: m.commit === true, snapshot: m.snapshot }, 1);
+      const message = { type: 'state', seq: m.seq, commit: m.commit === true, snapshot: m.snapshot };
+      if (this.room.protocol === 3) {
+        for (let seat = 1; seat < this.room.names.length; seat++) this.broadcast(message, seat);
+      } else this.broadcast(message, 1);
       return;
     }
     if (m.type === 'input') {
-      if (auth.seat !== 1) return this.reject(ws, 'forbidden', 'Ogiltig spelarplats.');
-      if (!validInput(m)) return this.reject(ws, 'bad_message', 'Ogiltig kontroll.');
-      if (m.seq <= this.room.input_seq) return;
+      const named = this.room.protocol === 3;
+      if (auth.seat === 0) return this.reject(ws, 'forbidden', 'Ogiltig spelarplats.');
+      if (!validInput(m, this.room.protocol ?? 1) || (named && m.target !== undefined && (!integer(m.target, 0, this.room.names.length - 1) || m.target === auth.seat))) return this.reject(ws, 'bad_message', 'Ogiltig kontroll.');
+      const lastSeq = named ? this.room.input_seqs[auth.seat] : this.room.input_seq;
+      if (m.seq <= lastSeq) return;
       const s = this.room.snapshot;
-      if (!this.presence().host_connected || !s || s.paused === true || s.phase !== 'aim' || s.active !== 1 || s.turn !== m.turn) return;
-      this.room.input_seq = m.seq;
-      this.broadcast({ type: 'input', seat: 1, seq: m.seq, turn: m.turn, move: m.move, angle_axis: m.angle_axis, power_axis: m.power_axis, ...(m.aim ? { aim: m.aim } : {}), ...(m.action ? { action: m.action } : {}) }, 0);
+      if (!this.presence().host_connected || (named && !this.presence().playable) || !s || s.paused === true || s.phase !== 'aim' || s.active !== auth.seat || s.turn !== m.turn) return;
+      if (named && (s.fighters[auth.seat].hp <= 0 || (m.target !== undefined && s.fighters[m.target].hp <= 0))) return this.reject(ws, 'bad_message', 'Välj en spelare som är kvar i matchen.');
+      if (named) this.room.input_seqs[auth.seat] = m.seq;
+      else this.room.input_seq = m.seq;
+      this.broadcast({ type: 'input', seat: auth.seat, seq: m.seq, turn: m.turn, move: m.move, angle_axis: m.angle_axis, power_axis: m.power_axis, ...(m.aim ? { aim: m.aim } : {}), ...(m.action ? { action: m.action } : {}), ...(named && m.target !== undefined ? { target: m.target } : {}) }, 0);
       return;
     }
     this.reject(ws, 'bad_message', 'Okänd meddelandetyp.');

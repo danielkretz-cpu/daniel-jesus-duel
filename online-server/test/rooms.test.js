@@ -88,7 +88,7 @@ async function pair(protocol) {
 
 test('public health endpoint reports protocol, with no private state', async () => {
   const response = await fetch(base.replace('ws:', 'http:') + '/health');
-  assert.deepEqual(await response.json(), { ok: true, game: 'Kraterkompisar', protocol: 2, supported_protocols: [1, 2] });
+  assert.deepEqual(await response.json(), { ok: true, game: 'Kraterkompisar', protocol: 3, supported_protocols: [1, 2, 3] });
 });
 
 test('real sockets create/join, relay terrain state and only the correct guest turn', async () => {
@@ -262,7 +262,7 @@ test('v2 negotiation rejects mismatched joins and resumes before consuming or re
 });
 
 test('unknown, malformed and duplicate protocol parameters are rejected explicitly', async () => {
-  for (const version of ['0', '3', '-1', '2.0', '02', 'NaN', 'Infinity', '', 'true', '2&protocol=1', '2&protocol=2']) {
+  for (const version of ['0', '4', '-1', '2.0', '02', 'NaN', 'Infinity', '', 'true', '2&protocol=1', '2&protocol=2']) {
     const bad = connect('/room?mode=create&protocol=' + version);
     assert.equal((await bad.next('error')).code, 'version_mismatch', version);
   }
