@@ -108,7 +108,99 @@ func run() -> void:
 	check(await wait_until(func(): return guest._last_received_seq >= host.net.state_seq), "Guest catches up to final authoritative sequence")
 	check(host.network_snapshot() == guest.network_snapshot(), "Final full gameplay snapshots agree exactly")
 	check(host.net.status == "connected" and guest.net.status == "connected", "No protocol errors or rate-limit disconnects in full play/rejoin flow")
+	await test_expansion_live()
 	await finish()
+
+func test_expansion_live() -> void:
+	# Select a new map through the actual title action, then create a fresh room.
+	# Physics stays frozen except for deliberate authoritative projectile steps.
+	host._leave_online()
+	guest._leave_online()
+	host._map_action(2 - host.map_id)
+	guest._map_action(4 - guest.map_id)
+	check(host.map_id == 2 and guest.map_id == 4, "Both clients can select different title maps before joining")
+	host._open_online()
+	host.net.create_room()
+	check(await wait_until(func(): return host.net.status == "connected"), "Host creates a new schema-2 room on its selected map")
+	if host.net.status != "connected":
+		return
+	guest._open_online()
+	guest.net.join_room(host.net.room)
+	check(await wait_until(func(): return host.net.together() and guest.net.together() and guest._online_started), "Guest joins the selected-map room through the real relay")
+	if not host.net.together() or not guest.net.together():
+		return
+	check(host.map_id == 2 and guest.map_id == 2 and host.terrain.get_data() == guest.terrain.get_data(), "Host map overrides guest title choice with byte-identical terrain")
+	host._map_action(1)
+	guest._map_action(-1)
+	check(host.map_id == 2 and guest.map_id == 2, "Neither client can switch the map inside the online match")
+	check(host.network_snapshot().schema == 2 and guest.network_snapshot().schema == 2, "Both real clients use expansion snapshot schema 2")
+	# Inject a near-target rocket but run its real movement/collision on the host.
+	host.wind = 0
+	host.phase = "flying"
+	host.projectile = {"weapon": host.ROCKET, "owner": 0, "target": 1, "pos": host.fighters[1].pos + Vector2(-29, -19), "vel": Vector2(500, 0), "age": 0.4, "bounces": 0}
+	host._step_projectile(0.06)
+	host._send_state(true)
+	check(await wait_until(func(): return guest.freedom == [1, 0] and guest._last_received_seq >= host.net.state_seq), "Direct-hit reward inventory reaches the guest over WebSocket")
+	check(host.network_snapshot() == guest.network_snapshot(), "Earned Freedom and impact crater have exact canonical relay equality")
+	host.phase = "aim"
+	host.weapon = host.FREEDOM
+	var health_before: int = host.fighters[1].hp
+	host.fire()
+	host._send_state(true)
+	check(await wait_until(func(): return not guest.projectile.is_empty() and guest.projectile.weapon == guest.FREEDOM and guest.freedom == [0, 0]), "Freedom launch and charge consumption relay together atomically")
+	check(host.network_snapshot() == guest.network_snapshot() and guest.projectile.owner == 0 and guest.projectile.target == 1, "In-flight Freedom preserves exact primary ownership and target")
+	host.projectile.pos = host.fighters[1].pos + Vector2(-29, -19)
+	host.projectile.vel = Vector2(480, 0)
+	host._step_projectile(0.06)
+	host._send_state(true)
+	check(await wait_until(func(): return guest.fighters[1].hp == health_before - 49 and guest.projectile.is_empty()), "Actual Freedom impact relays exactly 49 damage")
+	check(host.freedom == [0, 0] and guest.freedom == [0, 0], "Neither client invents a recursive Freedom reward")
+	# Freeze a real five-fragment airburst at a deliberately nonintegral wire state.
+	host.start_game()
+	host.wind = 27.700096130371094
+	host.freedom[0] = 1
+	host.freedom[1] = 1
+	host.weapon = host.BANANA
+	host.fire()
+	host.projectile.pos = Vector2(640.1234130859375, 90.98765563964844)
+	host.projectile.vel = Vector2(190.1234588623047, -80.87654113769531)
+	host.projectile.age = 1.19
+	host._step_projectile(0.02)
+	host.carve(Vector2(640, 410), 23)
+	host._send_state(true)
+	check(await wait_until(func(): return guest.fragments.size() == 5 and guest.projectile.is_empty() and guest.freedom == [1, 1]), "Real banana airburst relays five moving fragments and both held charges")
+	check(host.network_snapshot() == guest.network_snapshot(), "Midflight fragment vectors and ages retain exact canonical wire precision")
+	var preserved: Dictionary = host.network_snapshot()
+	var saved_guest_token: String = guest.net.token
+	guest.net._fail("Expansion-test guest interruption")
+	check(await wait_until(func(): return not host.net.guest_connected), "Fragment flight pauses when guest disconnects")
+	guest.net.reconnect()
+	check(await wait_until(func(): return host.net.together() and guest.net.together() and not guest.lobby.visible and guest.fragments.size() == 5), "Guest rejoins the existing midflight fragment volley")
+	check(guest.net.token == saved_guest_token and host.network_snapshot() == preserved and guest.network_snapshot() == preserved, "Guest reconnect preserves exact map, inventory, fragments and complete schema-2 state")
+	check(host.terrain.get_data() == guest.terrain.get_data(), "Guest reconnect also reconstructs exact selected-map craters")
+	var saved_host_token: String = host.net.token
+	host.net._fail("Expansion-test host interruption")
+	check(await wait_until(func(): return not guest.net.host_connected), "Guest observes host interruption during five-fragment flight")
+	host.net.reconnect()
+	check(await wait_until(func(): return host.net.together() and guest.net.together() and not host.lobby.visible and host.fragments.size() == 5), "Host rejoins its authoritative midflight fragment state")
+	host._send_state(true)
+	check(await wait_until(func(): return guest._last_received_seq >= host.net.state_seq), "Guest catches up to resumed schema-2 authority")
+	check(host.net.token == saved_host_token and host.network_snapshot() == preserved and guest.network_snapshot() == preserved, "Host reconnect preserves exact map, both inventories, fragments and complete schema-2 state")
+	# Resume the host manually, proving restored fragments are live rather than decorative.
+	for _n in range(960):
+		host._physics_process(1.0 / 120)
+	host._send_state(true)
+	check(await wait_until(func(): return guest.fragments.is_empty() and guest.turn == host.turn and guest._last_received_seq >= host.net.state_seq), "Restored fragments finish their physical impacts and synchronize the next turn")
+	check(host.phase in ["aim", "over"] and host.network_snapshot() == guest.network_snapshot() and host.terrain.get_data() == guest.terrain.get_data(), "Post-reconnect banana resolution converges on exact canonical state and terrain")
+	# Equal crater prefixes on a new base map must not retain the old map bitmap.
+	for chosen_map in range(5):
+		host.map_id = chosen_map
+		host.start_game()
+		host.carve(Vector2(640, 410), 23)
+		host._send_state(true)
+		check(await wait_until(func(): return guest.map_id == chosen_map and guest._last_received_seq >= host.net.state_seq), "Selected map %d snapshot passes the live relay" % chosen_map)
+		check(host.network_snapshot() == guest.network_snapshot() and host.terrain.get_data() == guest.terrain.get_data(), "Live map %d replacement resets equal-prefix crater terrain correctly" % chosen_map)
+	check(host.net.status == "connected" and guest.net.status == "connected", "Expansion play and both reconnect paths cause no protocol or rate-limit errors")
 
 func finish() -> void:
 	print("RESULT: %d real-WebSocket checks, %d failures" % [checks, failures])

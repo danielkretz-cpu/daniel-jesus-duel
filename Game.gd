@@ -14,6 +14,14 @@ const FONT = preload("res://assets/Regular.ttf")
 const BOLD = preload("res://assets/Bold.ttf")
 const NetSessionScript = preload("res://NetSession.gd")
 const OnlineLobbyScript = preload("res://OnlineLobby.gd")
+const MapThemes = preload("res://MapThemes.gd")
+const ROCKET := 0
+const BOMB := 1
+const BANANA := 2
+const FREEDOM := 3
+const BANANA_FRAGMENT := 4
+const FREEDOM_DAMAGE := 49
+const BANANA_FRAGMENTS := 5
 
 var terrain: Image
 var terrain_texture: ImageTexture
@@ -21,6 +29,9 @@ var fighters: Array[Dictionary] = []
 var particles: Array[Dictionary] = []
 var floaters: Array[Dictionary] = []
 var projectile: Dictionary = {}
+var fragments: Array[Dictionary] = []
+var freedom: Array[int] = [0, 0]
+var map_id := 0
 var trail: Array[Vector2] = []
 var phase := "title"
 var active := 0
@@ -146,6 +157,11 @@ func _layout(view: Vector2 = Vector2.ZERO) -> void:
 		buttons.start = Rect2(316, world_top + 294, 648, 80)
 	else:
 		buttons.start = Rect2(423, world_top + 270, 434, 56)
+	buttons.map_prev = Rect2(154, world_top + 220, 132, 112) if portrait else Rect2(286, world_top + 163, 72, 66)
+	buttons.map_next = Rect2(994, world_top + 220, 132, 112) if portrait else Rect2(922, world_top + 163, 72, 66)
+	if portrait:
+		buttons.start = Rect2(274, world_top + 370, 732, 112)
+		buttons.online = Rect2(274, world_top + 506, 732, 112)
 	if lobby != null:
 		lobby.place(ui_origin, ui_scale, world_top, portrait)
 	buttons.close_help = Rect2(400, world_top + 344, 480, 74)
@@ -155,35 +171,33 @@ func _generate_terrain() -> void:
 	terrain = Image.create(WW, WH, false, Image.FORMAT_RGBA8)
 	terrain.fill(Color.TRANSPARENT)
 	for x in range(WW):
-		var surface := int(310 + 42 * sin(float(x) / 121.0) + 23 * cos(float(x) / 63.0) - 26 * sin(float(x) / 290.0))
-		# Flat little launch pads keep the opening fair.
-		if abs(x - 224) < 33:
-			surface = 307
-		if abs(x - 1050) < 33:
-			surface = 325
+		var surface := MapThemes.surface_y(map_id, x)
 		for y in range(surface, WH):
-			var d := y - surface
-			var col := Color("45364f")
-			if d < 5:
-				col = Color("f5d07e")
-			elif d < 14:
-				col = Color("bf9b7d")
-			elif d < 22:
-				col = Color("906d6b")
-			elif y % 44 < 2:
-				col = Color("6c4765")
-			elif (x * 23 + y * 53) % 191 < 3:
-				col = Color("865c75")
-			terrain.set_pixel(x, y, col)
+			terrain.set_pixel(x, y, MapThemes.terrain_color(map_id, x, y, surface))
 	terrain_texture = ImageTexture.create_from_image(terrain)
 
 func _spawn_fighters() -> void:
+	var spawns := MapThemes.spawn_points(map_id)
 	fighters = [
-		{"name": "Daniel", "pos": Vector2(224, 307), "vel": Vector2.ZERO, "hp": 100, "face": 1.0, "ground": true},
-		{"name": "Jesus", "pos": Vector2(1050, 325), "vel": Vector2.ZERO, "hp": 100, "face": -1.0, "ground": true}
+		{"name": "Daniel", "pos": spawns[0], "vel": Vector2.ZERO, "hp": 100, "face": 1.0, "ground": true},
+		{"name": "Jesus", "pos": spawns[1], "vel": Vector2.ZERO, "hp": 100, "face": -1.0, "ground": true}
 	]
 
+func _map_action(direction: int) -> void:
+	if phase != "title" or online:
+		return
+	map_id = posmod(map_id + direction, MapThemes.count())
+	craters.clear()
+	_generate_terrain()
+	_spawn_fighters()
+	projectile.clear()
+	fragments.clear()
+	particles.clear()
+	trail.clear()
+
 func start_game() -> void:
+	freedom = [0, 0]
+	fragments.clear()
 	craters.clear()
 	_remote_held.clear()
 	_pending_aim.clear()
@@ -208,6 +222,7 @@ func start_game() -> void:
 	banner = "Daniel börjar!"
 	banner_clock = 2.0
 	help_open = false
+	toast_clock = 0
 	pointers.clear()
 	held.clear()
 	_sound("start")
@@ -356,9 +371,16 @@ func fire() -> void:
 			return
 	if phase != "aim" or (help_open and not _applying_remote):
 		return
+	if weapon == FREEDOM and freedom[active] == 0:
+		toast = "Freedom är låst. Träffa motståndaren direkt först!"
+		toast_clock = 3.0
+		return
+	if weapon == FREEDOM:
+		freedom[active] = 0
 	var d := _direction()
 	var start: Vector2 = fighters[active].pos + Vector2(0, -27) + d * 30
-	projectile = {"pos": start, "vel": d * (250 + power * 5.2), "age": 0.0, "weapon": weapon, "bounces": 0}
+	projectile = {"pos": start, "vel": d * (250 + power * 5.2), "age": 0.0, "weapon": weapon, "bounces": 0, "owner": active, "target": 1 - active}
+	fragments.clear()
 	trail.clear()
 	shots += 1
 	phase = "flying"
@@ -368,20 +390,63 @@ func fire() -> void:
 	_sound("fire")
 
 func _step_projectile(delta: float) -> void:
-	if projectile.is_empty():
+	if not projectile.is_empty():
+		_step_main_projectile(delta)
+	# Secondary bananas are actual bounded projectiles, never a cosmetic explosion.
+	for index in range(fragments.size() - 1, -1, -1):
+		if _step_fragment(fragments[index], delta):
+			fragments.remove_at(index)
+	if projectile.is_empty() and fragments.is_empty() and phase == "flying":
+		_end_shot()
+
+func _direct_target(bullet: Dictionary, point: Vector2) -> int:
+	var owner := int(bullet.get("owner", active))
+	for i in range(2):
+		if int(bullet.weapon) == FREEDOM and i != int(bullet.get("target", 1 - owner)):
+			continue
+		if fighters[i].hp > 0 and (i != owner or bullet.age > 0.3) and point.distance_to(fighters[i].pos + Vector2(0, -19)) < 20:
+			return i
+	return -1
+
+func _reward_direct_hit(owner: int, target: int, source_weapon: int) -> void:
+	# Only a projectile body hitting the enemy qualifies, never blast proximity.
+	# One held missile per player. A Freedom hit cannot create a free missile chain.
+	if target < 0 or target == owner or source_weapon == FREEDOM or freedom[owner] != 0:
 		return
+	freedom[owner] = 1
+	_show_freedom_reward(owner)
+
+func _show_freedom_reward(owner: int) -> void:
+	toast = "%s: fullträff! Freedom +1" % fighters[owner].name
+	toast_clock = 3.5
+	floaters.append({"pos": fighters[owner].pos + Vector2(0, -76), "text": "FREEDOM +1", "life": 2.5, "color": MINT})
+	_sound("turn")
+
+func _step_main_projectile(delta: float) -> void:
 	projectile.age += delta
-	projectile.vel += Vector2(wind, GRAVITY) * delta
+	if projectile.weapon == FREEDOM:
+		var target_pos: Vector2 = fighters[int(projectile.target)].pos + Vector2(0, -19)
+		# Loft above intervening terrain before the final homing dive.
+		var destination := target_pos
+		if absf(target_pos.x - projectile.pos.x) > 150:
+			var ceiling := 150.0
+			for x in range(int(minf(projectile.pos.x, target_pos.x)), int(maxf(projectile.pos.x, target_pos.x)), 30):
+				ceiling = minf(ceiling, MapThemes.surface_y(map_id, clampi(x, 0, WW - 1)) - 85.0)
+			destination.y = minf(target_pos.y - 100, ceiling)
+		var desired: Vector2 = (destination - projectile.pos).normalized() * 480.0
+		projectile.vel = projectile.vel.move_toward(desired, 1450.0 * delta)
+	else:
+		projectile.vel += Vector2(wind, GRAVITY) * delta
+	if projectile.weapon == BANANA and (projectile.age >= 1.2 or (projectile.age > 0.45 and projectile.vel.y >= 0)):
+		_burst_banana(projectile.pos)
+		return
 	var steps := maxi(1, int(projectile.vel.length() * delta / 3) + 1)
 	for _n in range(steps):
 		var before: Vector2 = projectile.pos
 		var next: Vector2 = before + projectile.vel * delta / steps
-		var hit_character := false
-		for i in range(2):
-			if fighters[i].hp > 0 and (i != active or projectile.age > 0.3) and next.distance_to(fighters[i].pos + Vector2(0, -19)) < 20:
-				hit_character = true
-		if _solid(next) or hit_character:
-			if projectile.weapon == 1 and not hit_character and projectile.bounces < 4 and projectile.age < 2.7:
+		var target := _direct_target(projectile, next)
+		if _solid(next) or target >= 0:
+			if projectile.weapon == BOMB and target < 0 and projectile.bounces < 4 and projectile.age < 2.7:
 				var normal := Vector2(float(int(_solid(next + Vector2(-4, 0))) - int(_solid(next + Vector2(4, 0)))), float(int(_solid(next + Vector2(0, -4))) - int(_solid(next + Vector2(0, 4)))))
 				if normal.length() < 0.1:
 					normal = Vector2.UP
@@ -390,42 +455,102 @@ func _step_projectile(delta: float) -> void:
 				projectile.bounces += 1
 				_sound("bounce")
 				break
-			_explode(next, 72.0 if projectile.weapon == 1 else 57.0)
+			_reward_direct_hit(int(projectile.owner), target, int(projectile.weapon))
+			if projectile.weapon == FREEDOM:
+				_freedom_impact(next, target)
+			elif projectile.weapon == BANANA:
+				_burst_banana(before, true)
+			else:
+				_explode(next, 72.0 if projectile.weapon == BOMB else 57.0)
 			return
 		projectile.pos = next
-		if next.y > WATER:
-			_emit(Vector2(next.x, WATER), MINT, 26, 160)
-			_sound("splash")
+		if next.y > WATER or next.x < -100 or next.x > WW + 100 or next.y < -1100:
+			if next.y > WATER:
+				_emit(Vector2(next.x, WATER), MapThemes.wave_color(map_id), 26, 160)
+				_sound("splash")
 			_end_shot()
 			return
-		if next.x < -100 or next.x > WW + 100 or next.y < -1100:
-			_end_shot()
-			return
-	if projectile.age > (2.9 if projectile.weapon == 1 else 8.0):
-		_explode(projectile.pos, 72 if projectile.weapon == 1 else 57)
+	if projectile.age > (2.9 if projectile.weapon == BOMB else 8.0):
+		if projectile.weapon == FREEDOM:
+			_freedom_impact(projectile.pos, -1)
+		else:
+			_explode(projectile.pos, 72 if projectile.weapon == BOMB else 57)
 		return
 	trail.append(projectile.pos)
 	if trail.size() > 28:
 		trail.pop_front()
 
+func _burst_banana(point: Vector2, impact: bool = false) -> void:
+	var owner := int(projectile.owner)
+	var inherited: Vector2 = projectile.vel * 0.16
+	projectile.clear()
+	trail.clear()
+	for n in range(BANANA_FRAGMENTS):
+		var velocity := Vector2((n - 2) * 95.0, -190.0 - (2 - abs(n - 2)) * 34.0) + inherited
+		fragments.append({"pos": point + Vector2((n - 2) * 4, -7), "vel": velocity, "age": 0.0, "weapon": BANANA_FRAGMENT, "bounces": 0, "owner": owner, "target": 1 - owner})
+	_emit(point, GOLD, 24, 170)
+	_sound("bounce")
+	toast = "BANANREGN! Fem små överraskningar."
+	toast_clock = 1.8
+	if impact:
+		_blast(point, 26, 9, false)
+
+func _step_fragment(bullet: Dictionary, delta: float) -> bool:
+	bullet.age += delta
+	bullet.vel += Vector2(wind * 0.7, GRAVITY) * delta
+	var steps := maxi(1, int(bullet.vel.length() * delta / 3) + 1)
+	for _n in range(steps):
+		var next: Vector2 = bullet.pos + bullet.vel * delta / steps
+		var target := _direct_target(bullet, next)
+		if _solid(next) or target >= 0:
+			_reward_direct_hit(int(bullet.owner), target, BANANA_FRAGMENT)
+			_blast(next, 32, 11, false)
+			return true
+		bullet.pos = next
+		if next.y > WATER or next.x < -100 or next.x > WW + 100:
+			_emit(Vector2(clampf(next.x, 0, WW), minf(next.y, WATER)), GOLD, 6, 70)
+			return true
+	if bullet.age > 3.5:
+		_blast(bullet.pos, 32, 11, false)
+		return true
+	return false
+
+func _freedom_impact(point: Vector2, target: int) -> void:
+	# Exactly 49 direct damage, no splash, falloff, knockback, or terrain removal.
+	if target >= 0 and target == int(projectile.target):
+		_damage(target, FREEDOM_DAMAGE)
+		hits += 1
+		toast = "FREEDOM! Exakt 49 skada."
+	else:
+		toast = "Freedom stoppades av terrängen."
+	toast_clock = 2.5
+	_emit(point, Color("99ddff"), 30, 220)
+	_emit(point, CREAM, 18, 130)
+	shake = 6
+	_sound("boom")
+	_end_shot()
+
 func _explode(p: Vector2, radius: float) -> void:
+	_blast(p, radius, 52, true)
+	_end_shot()
+
+func _blast(p: Vector2, radius: float, max_damage: int, knockback: bool) -> void:
 	carve(p, radius)
-	shake = 9.0
+	shake = 9.0 if max_damage > 20 else 4.0
 	for i in range(2):
 		var f: Dictionary = fighters[i]
 		var dist: float = p.distance_to(f.pos + Vector2(0, -16))
 		if dist < radius + 35 and f.hp > 0:
-			var amount := int(clampf(52 * (1.0 - dist / (radius + 38)), 3, 52))
+			var amount := int(clampf(max_damage * (1.0 - dist / (radius + 38)), 1 if max_damage < 20 else 3, max_damage))
 			_damage(i, amount)
 			hits += 1
-			var away: Vector2 = (f.pos + Vector2(0, -25) - p).normalized()
-			f.vel = Vector2(away.x * 220, -170 - amount * 2.0)
-			f.ground = false
-	_emit(p, GOLD, 28, 270)
-	_emit(p, Color("f29c72"), 20, 180)
-	_emit(p, Color("a0788c"), 20, 140)
+			if knockback:
+				var away: Vector2 = (f.pos + Vector2(0, -25) - p).normalized()
+				f.vel = Vector2(away.x * 220, -170 - amount * 2.0)
+				f.ground = false
+	_emit(p, GOLD, 28 if max_damage > 20 else 12, 270)
+	_emit(p, Color("f29c72"), 20 if max_damage > 20 else 8, 180)
 	_sound("boom")
-	_end_shot()
 
 func carve(p: Vector2, radius: float) -> void:
 	craters.append([p.x, p.y, radius])
@@ -446,6 +571,7 @@ func _damage(i: int, amount: int) -> void:
 
 func _end_shot() -> void:
 	projectile.clear()
+	fragments.clear()
 	phase = "settle"
 	settle_clock = 1.7
 
@@ -455,6 +581,8 @@ func _finish_turn() -> void:
 	if _check_winner():
 		return
 	active = 1 - active
+	if weapon == FREEDOM and freedom[active] == 0:
+		weapon = ROCKET
 	turn += 1
 	phase = "aim"
 	move_left = 170
@@ -517,6 +645,10 @@ func _input(event: InputEvent) -> void:
 					fire()
 			KEY_J: _jump()
 			KEY_TAB: _weapon_action()
+			KEY_LEFT:
+				if phase == "title": _map_action(-1)
+			KEY_RIGHT:
+				if phase == "title": _map_action(1)
 			KEY_ESCAPE: help_open = not help_open
 			KEY_R: _restart_action()
 			KEY_M: sound_on = not sound_on
@@ -570,7 +702,11 @@ func _pointer(p: Vector2, id: int, pressed: bool) -> void:
 		_restart_action()
 		return
 	if phase == "title" or phase == "over":
-		if phase == "title" and buttons.online.has_point(p):
+		if phase == "title" and buttons.map_prev.has_point(p):
+			_map_action(-1)
+		elif phase == "title" and buttons.map_next.has_point(p):
+			_map_action(1)
+		elif phase == "title" and buttons.online.has_point(p):
 			_open_online()
 		elif buttons.start.has_point(p):
 			_start_action()
@@ -616,6 +752,7 @@ func _restart_action() -> void:
 	if phase != "title":
 		phase = "title"
 		projectile.clear()
+		fragments.clear()
 		pointers.clear()
 		held.clear()
 	else:
@@ -678,6 +815,7 @@ func _draw_header() -> void:
 			var hp: int = fighters[i].hp if fighters.size() == 2 else 100
 			_round_rect(Rect2(xx, 134, 560, 112), Color("26283e"), 22, col if phase == "aim" and active == i else Color("3a3b50"), 3)
 			_text("DANIEL" if i == 0 else "JESUS", Vector2(xx + 28, 182), 31, CREAM, true)
+			_text("FREEDOM %d" % freedom[i], Vector2(xx + 284, 182), 22, GOLD if freedom[i] else MUTED, true)
 			_text("%d" % hp, Vector2(xx + 506, 182), 33, col, true, true)
 			_round_rect(Rect2(xx + 28, 209, 504, 10), Color("414154"), 5)
 			if hp > 0:
@@ -698,6 +836,7 @@ func _draw_header() -> void:
 		_round_rect(Rect2(xx, 23, 310, 66), Color("26283e"), 15, col if highlight else Color("3a3b50"), 2 if highlight else 1)
 		draw_circle(Vector2(xx + 27, 46), 7, col)
 		_text("DANIEL" if i == 0 else "JESUS", Vector2(xx + 45, 51), 17, CREAM, true)
+		_text("F:%d" % freedom[i], Vector2(xx + 218, 51), 13, GOLD if freedom[i] else MUTED, true, true)
 		_text("%d" % hp, Vector2(xx + 282, 51), 18, col, true, true)
 		_round_rect(Rect2(xx + 21, 65, 268, 6), Color("414154"), 3)
 		if hp > 0:
@@ -706,32 +845,12 @@ func _draw_header() -> void:
 		_text("EN LITEN Ö. TVÅ STORA EGON.", Vector2(640, 170), 32, CREAM, true, true)
 		_text("Turvis på samma skärm", Vector2(640, 212), 24, MUTED, false, true)
 	else:
-		_text("Ö 01  /  SKYMNINGSSKÄRET", Vector2(28, 113), 13, MUTED, true)
+		_text("BANA %02d  /  %s" % [map_id + 1, MapThemes.title(map_id).to_upper()], Vector2(28, 113), 13, MUTED, true)
 		var mode_text := _online_header(true) if online else "LOKAL DUELL  •  2 SPELARE"
 		_text(mode_text, Vector2(1252, 113) - Vector2(FONT.get_string_size(mode_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 13).x, 0), 13, MUTED)
 
 func _draw_world() -> void:
-	# A warm, hand-drawn archipelago, all original vector art.
-	draw_rect(Rect2(0, 0, WW, WH), Color("eab0a1"))
-	for n in range(12):
-		draw_rect(Rect2(0, n * 39.2, WW, 40), Color("ebc3ab").lerp(Color("bc8d9e"), float(n) / 14))
-	draw_circle(Vector2(642, 154), 91, Color("f6d898"))
-	draw_circle(Vector2(642, 154), 71, Color("f9e0a7"))
-	for c in [[Vector2(139, 73), 1.0], [Vector2(904, 105), 0.75], [Vector2(1160, 50), 0.58]]:
-		var cp: Vector2 = c[0] + Vector2(sin(elapsed * 0.06 + c[0].x) * 8, 0)
-		for n in range(4):
-			draw_circle(cp + Vector2(n * 32 * c[1], sin(n * 2.0) * 8), 22 * c[1], Color("f0cbbb"))
-	var back := PackedVector2Array([Vector2(0, 305), Vector2(75, 225), Vector2(182, 268), Vector2(292, 163), Vector2(430, 297), Vector2(546, 237), Vector2(671, 311), Vector2(822, 193), Vector2(950, 274), Vector2(1108, 183), Vector2(1280, 279), Vector2(1280, WH), Vector2(0, WH)])
-	draw_colored_polygon(back, Color("a58c9e"))
-	var front := PackedVector2Array([Vector2(0, 355), Vector2(158, 308), Vector2(308, 341), Vector2(483, 279), Vector2(692, 337), Vector2(891, 282), Vector2(1104, 350), Vector2(1280, 301), Vector2(1280, WH), Vector2(0, WH)])
-	draw_colored_polygon(front, Color("8c7a94"))
-	# Distant lighthouse and little birds.
-	draw_colored_polygon(PackedVector2Array([Vector2(855, 238), Vector2(871, 238), Vector2(867, 199), Vector2(859, 199)]), Color("ead3b7"))
-	draw_rect(Rect2(856, 192, 15, 9), Color("535165"))
-	draw_colored_polygon(PackedVector2Array([Vector2(853, 192), Vector2(863, 184), Vector2(873, 192)]), Color("535165"))
-	for n in range(4):
-		var bp := Vector2(434 + n * 37, 103 + sin(n * 3.3) * 19)
-		draw_polyline(PackedVector2Array([bp + Vector2(-6, -3), bp, bp + Vector2(6, -3)]), Color("9c7787"), 2, true)
+	MapThemes.draw_background(self, map_id, elapsed)
 	draw_texture(terrain_texture, Vector2.ZERO)
 	# Flowers and tufts survive only while their ground survives.
 	for x in [64, 128, 350, 392, 748, 799, 925, 1178, 1202]:
@@ -739,8 +858,8 @@ func _draw_world() -> void:
 		while y < WH and not _solid(Vector2(x, y)):
 			y += 1
 		if y < WATER - 5:
-			draw_line(Vector2(x, y), Vector2(x - 4, y - 13), Color("ded395"), 2, true)
-			draw_line(Vector2(x, y), Vector2(x + 5, y - 10), Color("c6c38e"), 2, true)
+			draw_line(Vector2(x, y), Vector2(x - 4, y - 13), MapThemes.accent_color(map_id), 2, true)
+			draw_line(Vector2(x, y), Vector2(x + 5, y - 10), MapThemes.accent_color(map_id).darkened(0.15), 2, true)
 			if x % 2 == 0:
 				draw_circle(Vector2(x - 4, y - 14), 3, CREAM)
 	if phase == "aim":
@@ -756,17 +875,9 @@ func _draw_world() -> void:
 			draw_line(p + Vector2(-8, 0), p + Vector2(8, -20), CREAM, 4, true)
 			draw_line(p + Vector2(8, 0), p + Vector2(-8, -20), CREAM, 4, true)
 	if not projectile.is_empty():
-		var p: Vector2 = projectile.pos
-		if p.y >= 3:
-			if projectile.weapon == 0:
-				draw_circle(p, 7, CREAM)
-				draw_circle(p, 4, GOLD)
-			else:
-				draw_circle(p, 10, MINT)
-				draw_line(p + Vector2(0, -8), p + Vector2(4, -15), CREAM, 2, true)
-				draw_circle(p + Vector2(4, -15), 3, GOLD)
-		else:
-			_text("•  %dm" % int(-p.y / 10), Vector2(clampf(p.x, 50, 1230), 22), 18, INK, true, true)
+		_draw_projectile(projectile)
+	for fragment in fragments:
+		_draw_projectile(fragment)
 	for part in particles:
 		var col: Color = part.color
 		col.a = minf(1, part.life / part.max * 2)
@@ -774,17 +885,49 @@ func _draw_world() -> void:
 	for f in floaters:
 		_text(f.text, f.pos, 25, f.color, true, true)
 	# Water moves independently of the destructible bitmap.
-	draw_rect(Rect2(0, WATER, WW, WH - WATER), Color("426d7a"))
+	draw_rect(Rect2(0, WATER, WW, WH - WATER), MapThemes.water_color(map_id))
 	var wave := PackedVector2Array()
 	for x in range(0, WW + 1, 8):
 		wave.append(Vector2(x, WATER + sin(x * 0.035 + elapsed * 2.0) * 2.0))
-	draw_polyline(wave, Color("94bfba"), 4, true)
+	draw_polyline(wave, MapThemes.wave_color(map_id), 4, true)
 	for n in range(15):
 		var x := fmod(n * 97 + elapsed * 8, 1280)
-		draw_line(Vector2(x, 454 + (n % 3) * 5), Vector2(x + 31, 454 + (n % 3) * 5), Color("69959b"), 2)
+		draw_line(Vector2(x, 454 + (n % 3) * 5), Vector2(x + 31, 454 + (n % 3) * 5), MapThemes.wave_color(map_id).darkened(0.2), 2)
 	# Wind badge.
 	_round_rect(Rect2(1074, 18, 179, 42), Color(0.99, 0.94, 0.84, 0.84), 21)
 	_text("VIND  %s %d" % ["→" if wind >= 0 else "←", int(absf(wind))], Vector2(1164, 46), 16, INK, true, true)
+
+func _draw_projectile(bullet: Dictionary) -> void:
+	var p: Vector2 = bullet.pos
+	if p.y < 3:
+		_text("•  %dm" % int(-p.y / 10), Vector2(clampf(p.x, 50, 1230), 22), 18, CREAM, true, true)
+		return
+	match int(bullet.weapon):
+		ROCKET:
+			draw_circle(p, 7, CREAM)
+			draw_circle(p, 4, GOLD)
+		BOMB:
+			draw_circle(p, 10, MINT)
+			draw_line(p + Vector2(0, -8), p + Vector2(4, -15), CREAM, 2, true)
+			draw_circle(p + Vector2(4, -15), 3, GOLD)
+		BANANA, BANANA_FRAGMENT:
+			var radius := 14.0 if bullet.weapon == BANANA else 8.0
+			var rotation: float = bullet.age * 4.0
+			var peel := PackedVector2Array()
+			for n in range(9):
+				peel.append(p + Vector2.from_angle(rotation + PI * 0.15 + n * PI * 0.12) * radius)
+			draw_polyline(peel, Color("785327"), 9 if bullet.weapon == BANANA else 6, true)
+			draw_polyline(peel, GOLD, 6 if bullet.weapon == BANANA else 4, true)
+			draw_circle(peel[0], 2, Color("5e472d"))
+			draw_circle(peel[peel.size() - 1], 2, Color("5e472d"))
+		FREEDOM:
+			var heading: Vector2 = bullet.vel.normalized()
+			var side := heading.orthogonal()
+			draw_colored_polygon(PackedVector2Array([p + heading * 15, p - heading * 9 + side * 6, p - heading * 6 - side * 6]), CREAM)
+			draw_line(p - heading * 8, p - heading * (21 + sin(elapsed * 40) * 4), GOLD, 5, true)
+			draw_line(p - side * 7 - heading * 6, p + side * 7 - heading * 6, Color("83d9fa"), 3, true)
+			var target: Vector2 = fighters[int(bullet.target)].pos + Vector2(0, -19)
+			draw_arc(target, 28, elapsed * 3, elapsed * 3 + PI * 1.5, 24, Color("83d9fa"), 2, true)
 
 func _draw_character(i: int, p: Vector2, s: float, face: float, label: bool) -> void:
 	var bounce := sin(elapsed * 3.3 + i) * 1.2
@@ -852,13 +995,19 @@ func _draw_aim() -> void:
 func _button(action: String, label: String, color: Color = Color("303249"), text_color: Color = CREAM, size_px: int = 26) -> void:
 	var r: Rect2 = buttons[action]
 	var down: bool = held.get(action, false)
-	var disabled := (phase != "aim" or not _can_control()) and action not in ["start", "online", "close_help"]
+	var disabled := (phase != "aim" or not _can_control()) and action not in ["start", "online", "map_prev", "map_next", "close_help"]
 	var col := color.lightened(0.15) if down else color
 	if disabled:
 		col = col.darkened(0.25)
 	_round_rect(Rect2(r.position + Vector2(0, 4), r.size), Color("111323"), 14)
 	_round_rect(r, col, 14, col.lightened(0.13), 1)
 	_text(label, r.get_center() + Vector2(0, size_px * 0.36), size_px, text_color.darkened(0.30) if disabled else text_color, true, true)
+
+func _weapon_label() -> String:
+	return ["● RAKET", "● STUDSBOMB", "BANANKLUSTER", "FREEDOM ×%d" % freedom[active]][weapon]
+
+func _weapon_hint() -> String:
+	return ["Raket · direktträff låser upp Freedom", "Studsbomb · studsar, sedan BOOM", "Banan · fem explosiva småbananer", "Målsökande · exakt 49 skada" if freedom[active] else "LÅST · direktträffa motståndaren först"][weapon]
 
 func _draw_controls() -> void:
 	var col: Color = MINT if active == 0 else PURPLE
@@ -883,9 +1032,9 @@ func _draw_controls() -> void:
 			_button(k, "−", Color("303249"), CREAM, 48)
 		for k in ["angle_up", "power_up"]:
 			_button(k, "+", Color("303249"), CREAM, 48)
-		_button("weapon", "●  RAKET" if weapon == 0 else "●  STUDSBOMB", Color("373249"), GOLD, 34)
+		_button("weapon", _weapon_label(), Color("373249"), GOLD if weapon != FREEDOM or freedom[active] else MUTED, 32)
 		_button("fire", "SKJUT!  ↗", GOLD, INK, 46)
-		_text("Tryck i himlen för att sikta. Håll +/− för att finjustera.", Vector2(640, panel_y + 770), 25, MUTED, false, true)
+		_text(_weapon_hint(), Vector2(640, panel_y + 770), 26, GOLD if weapon == FREEDOM else MUTED, false, true)
 		_text("Liggande skärm ger större spelplan.", Vector2(640, panel_y + 814), 25, MUTED, false, true)
 		_text("BYGGT I GODOT  •  ORIGINALGRAFIK  •  BARA EN DUELL TILL", Vector2(640, maxf(panel_y + 910, layout_h - 55)), 19, Color("6e708d"), true, true)
 	else:
@@ -902,10 +1051,10 @@ func _draw_controls() -> void:
 			_button(k, "+")
 		_text("%d°" % int(angle), Vector2(408, panel_y + 107), 32, CREAM, true, true)
 		_text("%d%%" % int(power), Vector2(650, panel_y + 107), 32, GOLD, true, true)
-		_button("weapon", "●  RAKET" if weapon == 0 else "●  STUDSBOMB", Color("373249"), GOLD, 16)
+		_button("weapon", _weapon_label(), Color("373249"), GOLD if weapon != FREEDOM or freedom[active] else MUTED, 14)
 		_button("fire", "SKJUT!  ↗", GOLD, INK, 25)
 		_text("A/D  flytta    J  hoppa    W/S  vinkel    Q/E  kraft    Tab  vapen    Mellanslag  skjut", Vector2(28, panel_y + 169), 13, MUTED)
-		_text("GODOT / 01", Vector2(1224, panel_y + 169), 12, Color("777995"), true, true)
+		_text(_weapon_hint(), Vector2(895, panel_y + 148), 11, GOLD if weapon == FREEDOM else MUTED, false, true)
 	# Remaining walk budget.
 	var bar_pos := Vector2(28, panel_y + 140) if not portrait else Vector2(44, panel_y + 252)
 	var bar_width := 244.0 if not portrait else 526.0
@@ -913,25 +1062,26 @@ func _draw_controls() -> void:
 	_round_rect(Rect2(bar_pos, Vector2(maxf(1, bar_width * move_left / 170), 4)), col, 2)
 
 func _draw_title() -> void:
-	draw_rect(Rect2(0, world_top, 1280, WH), Color(0.09, 0.10, 0.17, 0.35))
-	_round_rect(Rect2(244, world_top + 15, 792, 427 if not portrait else 465), Color("1f2237"), 26, Color("58516c"), 2)
-	_text("EN LITEN Ö. TVÅ STORA EGON.", Vector2(640, world_top + 80), 14 if not portrait else 23, GOLD, true, true)
-	_text("Kraterkompisar", Vector2(640, world_top + 144), 51, CREAM, true, true)
-	_text("Daniel & Jesus gör upp i skärgården.", Vector2(640, world_top + 185), 22, MUTED, false, true)
-	_text("Sikta. Skjut. Lämna en krater.", Vector2(640, world_top + 219), 20, MUTED, false, true)
-	_draw_character(0, Vector2(344, world_top + 283), 2.1, 1, false)
-	_draw_character(1, Vector2(936, world_top + 283), 2.1, -1, false)
-	_button("start", "LOKAL DUELL · SAMMA SKÄRM", GOLD, INK, 20 if not portrait else 25)
-	_button("online", "ONLINE · VARSIN SKÄRM", Color("51466f"), CREAM, 20 if not portrait else 27)
+	draw_rect(Rect2(0, world_top, 1280, WH), Color(0.09, 0.10, 0.17, 0.25))
+	_round_rect(Rect2(80 if portrait else 244, world_top + 10, 1120 if portrait else 792, 640 if portrait else 443), Color("1f2237"), 26, Color("58516c"), 2)
+	_text("FEM VÄRLDAR. TVÅ STORA EGON.", Vector2(640, world_top + (60 if portrait else 52)), 25 if portrait else 14, GOLD, true, true)
+	_text("Kraterkompisar", Vector2(640, world_top + (130 if portrait else 108)), 59 if portrait else 51, CREAM, true, true)
+	_text("Daniel & Jesus · välj er arena", Vector2(640, world_top + (178 if portrait else 140)), 29 if portrait else 19, MUTED, false, true)
+	_button("map_prev", "←", Color("373249"), CREAM, 50 if portrait else 30)
+	_button("map_next", "→", Color("373249"), CREAM, 50 if portrait else 30)
+	_text("%d / %d  ·  %s" % [map_id + 1, MapThemes.count(), MapThemes.title(map_id)], Vector2(640, world_top + (262 if portrait else 193)), 30 if portrait else 22, MapThemes.accent_color(map_id), true, true)
+	_text(MapThemes.subtitle(map_id), Vector2(640, world_top + (309 if portrait else 222)), 23 if portrait else 14, MUTED, false, true)
+	_button("start", "LOKAL DUELL · SAMMA SKÄRM", GOLD, INK, 29 if portrait else 20)
+	_button("online", "ONLINE · VARSIN SKÄRM", Color("51466f"), CREAM, 31 if portrait else 20)
 	if not portrait:
-		_text("2 spelare · inga konton · 40 sekunder per tur", Vector2(640, world_top + 426), 13, MUTED, false, true)
+		_text("Värden väljer bana · 40 sekunder per tur · inga konton", Vector2(640, world_top + 426), 13, MUTED, false, true)
 
 func _draw_victory() -> void:
 	draw_rect(Rect2(0, world_top, 1280, WH), Color(0.09, 0.10, 0.17, 0.50))
 	_round_rect(Rect2(270, world_top + 35, 740, 365 if not portrait else 430), Color("1f2237"), 26, Color("746789"), 2)
-	_text("SKÄRGÅRDENS NYA MÄSTARE", Vector2(640, world_top + 82), 16, GOLD, true, true)
+	_text("ARENANS NYA MÄSTARE", Vector2(640, world_top + 82), 16, GOLD, true, true)
 	_text("Oavgjort!" if winner < 0 else "%s vann!" % fighters[winner].name, Vector2(640, world_top + 151), 52, CREAM, true, true)
-	_text("%d skott. En ö med helt ny planlösning." % shots, Vector2(640, world_top + 192), 21, MUTED, false, true)
+	_text("%d skott. En bana med helt ny planlösning." % shots, Vector2(640, world_top + 192), 21, MUTED, false, true)
 	if winner >= 0:
 		_draw_character(winner, Vector2(640, world_top + 279), 1.4, 1, false)
 	_button("start", ("NYTT RUM  →" if online else "EN DUELL TILL  ↻"), GOLD, INK, 24 if not portrait else 32)
@@ -939,8 +1089,8 @@ func _draw_victory() -> void:
 func _draw_help() -> void:
 	draw_rect(Rect2(0, 0, 1280, layout_h), Color(0.06, 0.07, 0.12, 0.90))
 	_round_rect(Rect2(210, world_top + 4, 860, 442), Color("25283f"), 24, Color("57516a"), 2)
-	_text("Så blir du ö-mästare", Vector2(640, world_top + 57), 32, CREAM, true, true)
-	var lines := ["1. Flytta med pilarna. Hoppa över kanter och kratrar.", "2. Sikta i himlen eller ändra vinkel och kraft med +/−.", "3. Skjut en raket, eller prova en studsande bomb.", ("4. Spela bara din figur. Klockan går när hjälpen är öppen." if online else "4. Lämna över skärmen. Den som överlever vinner!"), "Vinden påverkar skottet. Vattnet är farligt. Marken går sönder.", "Tangentbord: A/D, J, W/S, Q/E, Tab, mellanslag.  M = ljud."]
+	_text("Så blir du arenamästare", Vector2(640, world_top + 57), 32, CREAM, true, true)
+	var lines := ["1. Flytta, hoppa och sikta. Tab eller Vapen byter ammunition.", "2. Raket, studsbomb eller banankluster med fem småbananer.", "3. Direktträff på fienden ger en Freedom (max en sparad).", "4. Freedom söker fienden: exakt 49 skada, ingen ny belöning.", "Välj bana före duellen. Online bestämmer värdens val.", "A/D, J, W/S, Q/E, Tab, mellanslag. Farorna vid botten är dödliga."]
 	for n in range(lines.size()):
 		_text(lines[n], Vector2(640, world_top + 109 + n * 38), 19 if n < 4 else 16, CREAM if n < 4 else MUTED, false, true)
 	_button("close_help", "NU KÖR VI", MINT, INK, 23)
@@ -1005,7 +1155,7 @@ func _weapon_action() -> void:
 	if online and net.seat == 1:
 		_send_guest_input("weapon")
 	else:
-		weapon = 1 - weapon
+		weapon = (weapon + 1) % 4
 
 func _open_online() -> void:
 	online = true
@@ -1031,6 +1181,7 @@ func _leave_online() -> void:
 	lobby.visible = false
 	phase = "title"
 	projectile.clear()
+	fragments.clear()
 	pointers.clear()
 	held.clear()
 	help_open = false
@@ -1161,7 +1312,7 @@ func _apply_remote_input(data: Dictionary) -> bool:
 	_applying_remote = true
 	match str(data.get("action", "")):
 		"jump": _jump()
-		"weapon": weapon = 1 - weapon
+		"weapon": weapon = (weapon + 1) % 4
 		"fire": fire()
 	_applying_remote = false
 	return true
@@ -1172,17 +1323,27 @@ func _wire_float(value: float) -> float:
 	# Re-normalize after parsing so every client holds the same exact wire state.
 	return PackedFloat32Array([value])[0]
 
+func _bullet_snapshot(bullet: Dictionary) -> Dictionary:
+	if bullet.is_empty():
+		return {}
+	return {"pos": [bullet.pos.x, bullet.pos.y], "vel": [bullet.vel.x, bullet.vel.y], "age": _wire_float(bullet.age), "weapon": bullet.weapon, "bounces": bullet.bounces, "owner": bullet.owner, "target": bullet.target}
+
+func _bullet_from_snapshot(bullet: Dictionary) -> Dictionary:
+	if bullet.is_empty():
+		return {}
+	return {"pos": Vector2(float(bullet.pos[0]), float(bullet.pos[1])), "vel": Vector2(float(bullet.vel[0]), float(bullet.vel[1])), "age": _wire_float(float(bullet.age)), "weapon": int(bullet.weapon), "bounces": int(bullet.bounces), "owner": int(bullet.owner), "target": int(bullet.target)}
+
 func network_snapshot() -> Dictionary:
 	var people: Array = []
 	for f in fighters:
 		people.append({"pos": [f.pos.x, f.pos.y], "vel": [f.vel.x, f.vel.y], "hp": f.hp, "face": f.face, "ground": f.ground})
-	var bullet := {}
-	if not projectile.is_empty():
-		bullet = {"pos": [projectile.pos.x, projectile.pos.y], "vel": [projectile.vel.x, projectile.vel.y], "age": _wire_float(projectile.age), "weapon": projectile.weapon, "bounces": projectile.bounces}
+	var pieces: Array = []
+	for fragment in fragments:
+		pieces.append(_bullet_snapshot(fragment))
 	var path: Array = []
 	for point in trail:
 		path.append([point.x, point.y])
-	return {"schema": 1, "paused": (not _host_focused if net != null and net.seat == 0 else _host_paused) if online else false, "phase": phase, "turn": turn, "active": active, "angle": _wire_float(angle), "power": _wire_float(power), "weapon": weapon, "wind": _wire_float(wind), "move_left": _wire_float(move_left), "turn_clock": _wire_float(turn_clock), "settle_clock": _wire_float(settle_clock), "winner": winner, "shots": shots, "hits": hits, "fighters": people, "projectile": bullet, "terrain_version": craters.size(), "craters": craters.duplicate(true), "trail": path}
+	return {"schema": 2, "map_id": map_id, "freedom": freedom.duplicate(), "fragments": pieces, "paused": (not _host_focused if net != null and net.seat == 0 else _host_paused) if online else false, "phase": phase, "turn": turn, "active": active, "angle": _wire_float(angle), "power": _wire_float(power), "weapon": weapon, "wind": _wire_float(wind), "move_left": _wire_float(move_left), "turn_clock": _wire_float(turn_clock), "settle_clock": _wire_float(settle_clock), "winner": winner, "shots": shots, "hits": hits, "fighters": people, "projectile": _bullet_snapshot(projectile), "terrain_version": craters.size(), "craters": craters.duplicate(true), "trail": path}
 
 func _number_in(value, low: float, high: float) -> bool:
 	return (value is float or value is int) and is_finite(float(value)) and float(value) >= low and float(value) <= high
@@ -1191,16 +1352,28 @@ func _valid_pair(value, low: float = -5000, high: float = 5000) -> bool:
 	return value is Array and value.size() == 2 and _number_in(value[0], low, high) and _number_in(value[1], low, high)
 
 func _valid_snapshot(data: Dictionary) -> bool:
-	if data.get("schema") != 1 or data.get("phase") not in ["aim", "flying", "settle", "over"]:
+	if data.get("schema") != 2 or data.get("phase") not in ["aim", "flying", "settle", "over"]:
 		return false
 	if data.has("paused") and not data.paused is bool:
 		return false
-	var ranges := {"turn": [1, 100000], "active": [0, 1], "angle": [5, 85], "power": [12, 100], "weapon": [0, 1], "wind": [-100, 100], "move_left": [0, 170], "turn_clock": [-1, 40], "settle_clock": [-10, 10], "winner": [-1, 1], "shots": [0, 100000], "hits": [0, 200000]}
+	var ranges := {"turn": [1, 100000], "active": [0, 1], "angle": [5, 85], "power": [12, 100], "weapon": [0, 3], "wind": [-100, 100], "move_left": [0, 170], "turn_clock": [-1, 40], "settle_clock": [-10, 10], "winner": [-1, 1], "shots": [0, 100000], "hits": [0, 200000]}
 	for key in ranges:
 		if not _number_in(data.get(key), ranges[key][0], ranges[key][1]):
 			return false
 	for key in ["turn", "active", "weapon", "winner", "shots", "hits"]:
 		if float(data[key]) != floorf(float(data[key])):
+			return false
+	if not _number_in(data.get("map_id"), 0, MapThemes.count() - 1) or float(data.map_id) != floorf(float(data.map_id)):
+		return false
+	if not data.get("freedom") is Array or data.freedom.size() != 2:
+		return false
+	for ammo in data.freedom:
+		if not _number_in(ammo, 0, 1) or float(ammo) != floorf(float(ammo)):
+			return false
+	if not data.get("fragments") is Array or data.fragments.size() > BANANA_FRAGMENTS:
+		return false
+	for fragment in data.fragments:
+		if not _valid_bullet(fragment, true):
 			return false
 	if not data.get("fighters") is Array or data.fighters.size() != 2:
 		return false
@@ -1219,11 +1392,18 @@ func _valid_snapshot(data: Dictionary) -> bool:
 			return false
 	if not data.get("projectile") is Dictionary:
 		return false
-	var bullet: Dictionary = data.projectile
-	if not bullet.is_empty():
-		if not _valid_pair(bullet.get("pos")) or not _valid_pair(bullet.get("vel")) or not _number_in(bullet.get("age"), 0, 10) or not _number_in(bullet.get("weapon"), 0, 1) or float(bullet.weapon) != floorf(float(bullet.weapon)) or not _number_in(bullet.get("bounces"), 0, 4):
-			return false
+	if not data.projectile.is_empty() and not _valid_bullet(data.projectile, false):
+		return false
 	return true
+
+func _valid_bullet(bullet, fragment: bool) -> bool:
+	if not bullet is Dictionary or not _valid_pair(bullet.get("pos")) or not _valid_pair(bullet.get("vel")) or not _number_in(bullet.get("age"), 0, 10):
+		return false
+	var ranges := {"weapon": [4, 4] if fragment else [0, 3], "bounces": [0, 4], "owner": [0, 1], "target": [0, 1]}
+	for key in ranges:
+		if not _number_in(bullet.get(key), ranges[key][0], ranges[key][1]) or float(bullet[key]) != floorf(float(bullet[key])):
+			return false
+	return int(bullet.target) == 1 - int(bullet.owner)
 
 func apply_network_snapshot(data: Dictionary) -> bool:
 	# Validate everything before changing the scene. Never decode executable objects.
@@ -1233,7 +1413,8 @@ func apply_network_snapshot(data: Dictionary) -> bool:
 	var old_turn := turn
 	var old_shots := shots
 	var old_craters := craters.size()
-	var same_prefix: bool = craters.size() <= data.craters.size()
+	var same_prefix: bool = map_id == int(data.map_id) and craters.size() <= data.craters.size()
+	map_id = int(data.map_id)
 	if same_prefix:
 		for i in range(craters.size()):
 			if craters[i] != data.craters[i]:
@@ -1251,6 +1432,10 @@ func apply_network_snapshot(data: Dictionary) -> bool:
 		fighters[i] = {"name": "Daniel" if i == 0 else "Jesus", "pos": Vector2(float(f.pos[0]), float(f.pos[1])), "vel": Vector2(float(f.vel[0]), float(f.vel[1])), "hp": int(f.hp), "face": float(f.face), "ground": bool(f.ground)}
 		if damage > 0:
 			floaters.append({"pos": fighters[i].pos + Vector2(0, -63), "text": "−%d" % damage, "life": 1.7, "color": GOLD})
+	for i in range(2):
+		if int(data.freedom[i]) > freedom[i]:
+			_show_freedom_reward(i)
+		freedom[i] = int(data.freedom[i])
 	_host_paused = bool(data.get("paused", false))
 	phase = str(data.phase)
 	turn = int(data.turn)
@@ -1265,10 +1450,10 @@ func apply_network_snapshot(data: Dictionary) -> bool:
 	winner = int(data.winner)
 	shots = int(data.shots)
 	hits = int(data.hits)
-	projectile.clear()
-	if not data.projectile.is_empty():
-		var b: Dictionary = data.projectile
-		projectile = {"pos": Vector2(float(b.pos[0]), float(b.pos[1])), "vel": Vector2(float(b.vel[0]), float(b.vel[1])), "age": _wire_float(float(b.age)), "weapon": int(b.weapon), "bounces": int(b.bounces)}
+	projectile = _bullet_from_snapshot(data.projectile)
+	fragments.clear()
+	for piece in data.fragments:
+		fragments.append(_bullet_from_snapshot(piece))
 	trail.clear()
 	for point in data.trail:
 		trail.append(Vector2(float(point[0]), float(point[1])))

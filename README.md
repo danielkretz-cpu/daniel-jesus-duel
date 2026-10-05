@@ -1,6 +1,6 @@
 # Kraterkompisar
 
-En liten, färdig artilleriduell i **Godot 4.6.3**. Daniel och Jesus möts på Skymningsskäret: en egen skärgårdsbana som bokstavligen går sönder under matchen.
+En liten, färdig artilleriduell i **Godot 4.6.3**. Daniel och Jesus möts på fem egna, förstörbara arenor med originalgrafik och fyra vapen.
 
 ## Spela
 
@@ -14,7 +14,7 @@ Om nätverket bryts pausas matchen. Använd **Återanslut** i samma öppna spelf
 - **J:** hoppa.
 - **W / S eller ↑ / ↓:** ändra vinkel.
 - **Q / E:** ändra kraft.
-- **Tab:** byt mellan raket och studsbomb.
+- **Tab:** byt mellan raket, studsbomb, banankluster och Freedom.
 - **Mellanslag:** skjut.
 - **M:** ljud av/på.
 - **Esc eller ?:** hjälp och paus.
@@ -23,6 +23,14 @@ Om nätverket bryts pausas matchen. Använd **Återanslut** i samma öppna spelf
 På mobil använder du knapparna. Håll pilarna eller +/− intryckta. Du kan också trycka eller dra i himlen för att sikta. Gränssnittet anpassar sig till stående och liggande skärm. Liggande ger bäst överblick.
 
 Varje tur är 40 sekunder. Vinden påverkar skotten. Raketer exploderar vid träff; studsbomber studsar och har en kort stubin. Explosioner ger skada och knuffar, men även höga fall är farliga. Vattnet innebär utslagning.
+
+## Nya vapen och banor
+
+- **Banankluster:** en banan spricker i fem fysiska småbananer vid toppen av kastet, efter 1,2 sekunder eller vid kollision. Varje småbanan exploderar och gör en egen krater. Huvudträffen ger högst 9 explosionsskada och varje del högst 11; terrängras och bottenfaror kan ge ytterligare skada.
+- **Freedom:** en direkt projektilträff på motståndaren ger en målsökande missil. Det gäller raket, studsbomb och banan/delbanan, men inte enbart explosionsradie eller självträff. Varje spelare kan spara högst en. Den förbrukas när den avfyras, söker motståndaren och ger exakt **49 direkt skada** vid träff, utan splash, knuff eller ny Freedom-belöning. Terräng kan stoppa den. Låst ammunition och antal visas i gränssnittet.
+- **Fem arenor:** Skymningsskäret (skärgård), Urtidsdjungeln (dinosaurieäventyr), Dubbelsolens öken (rymdvästern), Neonmetropolen (digital action) och Eldcitadellet (mörk fantasy). Banorna har olika höjdprofiler, färger och handritade miljöer med säkra startytor. Referenserna är filmgenrer, med egna motiv och inga kopierade filmtillgångar.
+
+Välj bana med pilarna på startskärmen före en lokal match eller innan du skapar ett onlinerum. Värdens val gäller online. En ny duell återställer mark, ammunition och hälsa. Återanslutning behåller vald bana, kratrar, ammunition och alla flygande småbananer. Båda spelarna behöver samma spelversion; gamla rum stöds fortsatt av servern men blandade versioner kan inte dela rum.
 
 ## Öppna i Godot
 
@@ -38,6 +46,7 @@ Projektet använder GDScript och Compatibility-renderaren. Ingen .NET, databas, 
 godot --headless --path . --editor --import --quit
 godot --headless --path . --script res://tests/test_game.gd
 godot --headless --path . --script res://tests/test_network.gd
+godot --headless --path . --script res://tests/test_expansion.gd
 ```
 
 CI och byggskript beskrivs i [docs/deployment.md](docs/deployment.md). Webbversionen exporteras till `build/web/index.html` och måste serveras via HTTP(S), inte öppnas med `file://`.
@@ -52,7 +61,8 @@ python3 -m http.server 8000 --directory build/web
 
 ## Projektstruktur
 
-- `Game.gd`: spelfysik, turer, förstörbar terräng, originalgrafik, ljud och responsivt gränssnitt.
+- `Game.gd`: spelfysik, turer, ammunition, förstörbar terräng, originalgrafik, ljud och responsivt gränssnitt.
+- `MapThemes.gd`: fem deterministiska terrängprofiler och egenritade filmmiljöer.
 - `Main.tscn`: huvudscenen.
 - `NetSession.gd`, `OnlineLobby.gd`: privat rumslobby och WebSocket-klient.
 - `network_config.json`: offentlig serveradress, ingen hemlighet. Tom adress visar tydligt att online inte är aktiverat.
@@ -74,6 +84,6 @@ Godot är fri programvara under MIT-licensen: https://godotengine.org/license/ .
 
 ## Avgränsning
 
-Spelet har lokal tvåspelarduell och kodbaserad onlineduell på en bana. Jesus är en spelbar figur, inte en AI-motståndare. Online kräver en separat publicerad relayserver: GitHub Pages kan bara servera själva spelet. Se [onlineguiden](online-server/README.md). Utan serveradress fungerar lokal duell och onlinelobbyn förklarar vad som saknas.
+Spelet har lokal tvåspelarduell och kodbaserad onlineduell på fem banor. Jesus är en spelbar figur, inte en AI-motståndare. Online kräver en separat publicerad relayserver: GitHub Pages kan bara servera själva spelet. Se [onlineguiden](online-server/README.md). Utan serveradress fungerar lokal duell och onlinelobbyn förklarar vad som saknas.
 
 Inga spelarkonton, chatt, publika rum, topplistor eller beständiga matchresultat ingår. Daniel är matchvärd; detta är ett vänskapsspel, inte ett fusksäkert tävlingssystem. Host-migrering och återställning efter stängd/laddad-om flik ingår inte.

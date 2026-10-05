@@ -4,7 +4,7 @@ signal changed
 signal welcomed(data: Dictionary)
 signal received(data: Dictionary)
 
-const PROTOCOL := 1
+const PROTOCOL := 2
 const MAX_PACKET := 65536
 var server_url := ""
 var socket: WebSocketPeer
@@ -39,7 +39,7 @@ func together() -> bool:
 
 func create_room() -> void:
 	leave()
-	_connect("/room?mode=create")
+	_connect("/room?mode=create&protocol=%d" % PROTOCOL)
 
 func join_room(code: String) -> void:
 	leave()
@@ -47,7 +47,7 @@ func join_room(code: String) -> void:
 	if not valid_room_code(normalized):
 		_fail("Rumskoden ska ha 8 bokstäver eller siffror.")
 		return
-	_connect("/room?code=" + normalized.uri_encode())
+	_connect("/room?code=" + normalized.uri_encode() + "&protocol=%d" % PROTOCOL)
 
 func valid_room_code(value: String) -> bool:
 	if value.length() != 8:
@@ -61,7 +61,7 @@ func reconnect() -> void:
 	if room.is_empty() or token.is_empty():
 		return
 	_close_socket()
-	_connect("/room?code=" + room.uri_encode() + "&token=" + token.uri_encode())
+	_connect("/room?code=" + room.uri_encode() + "&token=" + token.uri_encode() + "&protocol=%d" % PROTOCOL)
 
 func _connect(path: String) -> void:
 	if not configured():
@@ -134,7 +134,7 @@ func _handle(data: Dictionary) -> void:
 			status_text = "Ni är anslutna!" if together() else "Den andra spelaren är frånkopplad. Matchen är pausad."
 			changed.emit()
 		"error":
-			var messages := {"room_not_found": "Rummet finns inte längre. Kontrollera koden eller skapa ett nytt.", "room_full": "Rummet är fullt. Bara två spelare får plats.", "invalid_token": "Rummet kan inte återanslutas. Skapa ett nytt rum.", "rate_limited": "Servern är upptagen. Vänta en stund och försök igen.", "room_expired": "Rummet har stängts. Skapa ett nytt rum.", "bad_message": "Spelet och servern kunde inte förstå varandra. Ladda om sidan."}
+			var messages := {"version_mismatch": "Spelversionerna stämmer inte överens. Båda behöver ladda om sidan och skapa ett nytt rum.", "room_not_found": "Rummet finns inte längre. Kontrollera koden eller skapa ett nytt.", "room_full": "Rummet är fullt. Bara två spelare får plats.", "invalid_token": "Rummet kan inte återanslutas. Skapa ett nytt rum.", "rate_limited": "Servern är upptagen. Vänta en stund och försök igen.", "room_expired": "Rummet har stängts. Skapa ett nytt rum.", "bad_message": "Spelet och servern kunde inte förstå varandra. Ladda om sidan."}
 			_fail(str(messages.get(str(data.get("code", "")), "Anslutningen misslyckades. Försök igen.")))
 		"state", "input":
 			received.emit(data)

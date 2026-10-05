@@ -26,6 +26,7 @@ run_godot import --editor --import
 run_godot smoke --quit-after 10
 run_godot tests --script res://tests/test_game.gd
 run_godot network-tests --script res://tests/test_network.gd
+run_godot expansion-tests --script res://tests/test_expansion.gd
 run_godot export --export-release Web "$ROOT/build/web/index.html"
 touch "$ROOT/build/web/.nojekyll"
 python3 "$ROOT/scripts/validate-web.py" "$ROOT/build/web"
