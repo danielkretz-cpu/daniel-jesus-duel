@@ -1,0 +1,44 @@
+{
+  "godot_version": "4.6.3.stable",
+  "source_url": "https://github.com/godotengine/godot-builds/releases/download/4.6.3-stable/Godot_v4.6.3-stable_export_templates.tpz",
+  "method": "Clean builds download the complete official export-template archive, verify its published SHA256, extract only the two Web templates, and verify each extracted SHA256. Verified extracted templates are cached, never committed to source.",
+  "templates": [
+    {
+      "filename": "web_nothreads_debug.zip",
+      "path": "tooling/4.6.3.stable/web_nothreads_debug.zip",
+      "size": 10120053,
+      "sha256": "4a8a8ef7519637f7898fad25f09d3e466965e99c04e441682e1bc2d97a548922",
+      "official_archive_entry": "templates/web_nothreads_debug.zip",
+      "zip_crc32": "0xfb4fb5d8",
+      "template_contents": [
+        "godot.js",
+        "godot.wasm",
+        "godot.audio.worklet.js",
+        "godot.audio.position.worklet.js",
+        "godot.html",
+        "godot.service.worker.js",
+        "godot.offline.html"
+      ]
+    },
+    {
+      "filename": "web_nothreads_release.zip",
+      "path": "tooling/4.6.3.stable/web_nothreads_release.zip",
+      "size": 9574223,
+      "sha256": "1446f79dc12f60ce5d244c39fb6628ec298337ca5c4f91a16491feea72aa1bc9",
+      "official_archive_entry": "templates/web_nothreads_release.zip",
+      "zip_crc32": "0x144b6217",
+      "template_contents": [
+        "godot.js",
+        "godot.wasm",
+        "godot.audio.worklet.js",
+        "godot.audio.position.worklet.js",
+        "godot.html",
+        "godot.service.worker.js",
+        "godot.offline.html"
+      ]
+    }
+  ],
+  "archive_sha256": "3fbe2c0e2dec9d537ab9ec97bcf8da91dcf23357fc51f67092dd068d839290a8",
+  "archive_size_bytes": 1255918323,
+  "digest_source": "https://api.github.com/repos/godotengine/godot-builds/releases/tags/4.6.3-stable"
+}

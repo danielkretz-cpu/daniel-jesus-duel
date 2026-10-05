@@ -1,0 +1,13 @@
+.godot/
+.cache/
+.vercel/
+build/
+web/
+qa/
+tooling/*
+!tooling/template-provenance.json
+__pycache__/
+*.pyc
+.DS_Store
+!tooling/GODOT-LICENSE.txt
+!tooling/GODOT-THIRD-PARTY.txt
